@@ -1,0 +1,1450 @@
+================================================================================
+                    LEGALEASE CAF MANAGER - INITIAL APPLICATION
+                         COMPREHENSIVE TECHNICAL DOCUMENTATION
+================================================================================
+
+Document Version: 1.0
+Date: Initial Version
+Application: LegalEase CAF Manager (legalease-caf-backend)
+
+================================================================================
+                            TABLE OF CONTENTS
+================================================================================
+
+1. APPLICATION OVERVIEW
+2. ARCHITECTURE
+3. DATA MODELS
+4. AI PIPELINE & WORKFLOW
+5. COMPONENT DETAILS
+6. SERVICES
+7. USER WORKFLOWS
+8. TECHNICAL IMPLEMENTATION DETAILS
+9. DATA FLOW DIAGRAMS
+
+================================================================================
+                        1. APPLICATION OVERVIEW
+================================================================================
+
+1.1 PURPOSE AND DOMAIN
+----------------------
+LegalEase CAF Manager is a web-based legal case management application designed
+specifically for lawyers handling administrative appeals (recours) against the
+CAF (Caisse d'Allocations Familiales - French Family Allowance Fund). The
+application streamlines the process of managing client cases, from initial
+intake through document generation and case review.
+
+The application serves two primary user types:
+- Clients: Submit cases through a public-facing form
+- Lawyers: Manage and review cases through a professional dashboard
+
+Domain Context:
+- Administrative law (droit administratif)
+- Social benefits appeals (RSA, APL, Prime d'activité, etc.)
+- Three-stage legal process: CONTROL, RAPO (Recours Administratif Préalable
+  Obligatoire), and LITIGATION (Tribunal Administratif)
+
+1.2 TECHNOLOGY STACK
+-------------------
+Frontend Framework: React 19.2.0
+Language: TypeScript 5.8.2
+Build Tool: Vite 6.2.0
+AI Service: Google Gemini AI (gemini-2.5-flash via @google/genai 1.30.0)
+Styling: Tailwind CSS (via CDN)
+Icons: Font Awesome 6.0.0 (via CDN)
+Module System: ES Modules (ESM)
+
+Development Dependencies:
+- @vitejs/plugin-react: React plugin for Vite
+- @types/node: Node.js type definitions
+
+1.3 APPLICATION TYPE
+-------------------
+Single Page Application (SPA) with dual-view architecture:
+- Client View: Public-facing form for case submission
+- Lawyer View: Professional dashboard for case management
+- Success View: Confirmation screen after submission
+
+The application runs entirely in the browser with no backend server. All
+processing, including AI operations, occurs client-side using the Google Gemini
+API directly from the browser.
+
+================================================================================
+                            2. ARCHITECTURE
+================================================================================
+
+2.1 COMPONENT HIERARCHY
+----------------------
+The application follows a component-based architecture with clear separation of
+concerns:
+
+App.tsx (Root Component)
+├── Navigation Bar (View Switcher)
+├── ClientForm Component (Client View)
+├── Success View (Confirmation Screen)
+└── LawyerDashboard Component (Lawyer View)
+    ├── Case List Sidebar
+    ├── Case Detail View
+    │   ├── Stage Selector
+    │   ├── Tab Navigation (Details/Email/Appeal)
+    │   ├── Prompt Editor
+    │   ├── Draft Editor (A4 Format)
+    │   └── Export Controls
+
+Component Structure:
+- App.tsx: Main orchestrator, manages global state and view routing
+- components/ClientForm.tsx: Client intake form with file upload
+- components/LawyerDashboard.tsx: Case management interface
+- components/FormInput.tsx: Reusable form input component
+- services/geminiService.ts: AI service layer
+- services/knowledgeBase.ts: Legal knowledge base data
+
+2.2 STATE MANAGEMENT
+-------------------
+The application uses React's built-in useState hook for state management. All
+state is managed at the App.tsx level, following a top-down data flow pattern.
+
+Global State (App.tsx):
+- currentView: Enum (CLIENT | LAWYER | SUCCESS)
+- cases: Array<ClientSubmission> - All submitted cases
+
+State Flow:
+1. Client submits form → handleClientSubmit creates new case
+2. Case added to cases array with initial state (NEW, default stage RAPO)
+3. Background AI processing updates case state asynchronously
+4. Lawyer dashboard reads from cases array
+5. Updates propagate through setCases state updates
+
+Local Component State:
+- ClientForm: Form data, validation errors, file list, consent flags
+- LawyerDashboard: Selected case ID, active tab, editing states, prompt visibility
+- FormInput: None (presentational component)
+
+2.3 VIEW SWITCHING MECHANISM
+---------------------------
+The application implements a simple enum-based view system:
+
+enum View {
+    CLIENT = 'CLIENT',    // Client submission form
+    LAWYER = 'LAWYER',    // Lawyer dashboard
+    SUCCESS = 'SUCCESS'   // Post-submission confirmation
+}
+
+View transitions:
+- CLIENT → SUCCESS: After successful form submission
+- SUCCESS → LAWYER: Via "Accéder à l'Espace Avocat" button
+- Any view → CLIENT: Via "Vue Client" navigation button
+- Any view → LAWYER: Via "Espace Avocat" navigation button
+
+The navigation bar persists across all views, providing consistent access to
+both views.
+
+2.4 FILE ORGANIZATION
+--------------------
+Project Structure:
+/
+├── App.tsx                    # Main application component
+├── index.tsx                  # React DOM entry point
+├── index.html                 # HTML template
+├── types.ts                   # TypeScript type definitions
+├── vite.config.ts             # Vite build configuration
+├── tsconfig.json              # TypeScript compiler configuration
+├── package.json               # Dependencies and scripts
+├── metadata.json              # Application metadata
+├── components/
+│   ├── ClientForm.tsx         # Client intake form
+│   ├── FormInput.tsx          # Reusable form input
+│   └── LawyerDashboard.tsx    # Lawyer case management
+└── services/
+    ├── geminiService.ts       # AI service layer
+    └── knowledgeBase.ts       # Legal knowledge base
+
+================================================================================
+                           3. DATA MODELS
+================================================================================
+
+3.1 TYPESCRIPT INTERFACES AND ENUMS
+------------------------------------
+All type definitions are centralized in types.ts for maintainability.
+
+3.1.1 Case Status Enum
+----------------------
+enum CaseStatus {
+    NEW = 'NEW',              # Case just submitted, awaiting AI processing
+    PROCESSING = 'PROCESSING', # AI is generating drafts
+    REVIEWED = 'REVIEWED',     # Lawyer has reviewed the case
+    SENT = 'SENT'              # Documents have been sent to client
+}
+
+Status Flow: NEW → PROCESSING → REVIEWED → SENT
+
+3.1.2 Legal Stage Enum
+----------------------
+enum LegalStage {
+    CONTROL = 'CONTROL',       # Contrôle / Procédure contradictoire
+    RAPO = 'RAPO',            # Recours Administratif Préalable Obligatoire
+    LITIGATION = 'LITIGATION'  # Recours Contentieux (Tribunal)
+}
+
+Stage Classification Rules:
+- CONTROL: Letter of end of control, contradictory procedure, invitation to
+  observations. No formal overpayment notice.
+- RAPO: Overpayment notification, rights revision, 2-month deadline open for
+  CRA/President CD.
+- LITIGATION: RAPO rejected (explicit or implicit), referral to Administrative
+  Tribunal.
+
+3.1.3 AttachedFile Interface
+----------------------------
+interface AttachedFile {
+    name: string;      # Original filename
+    mimeType: string;  # MIME type (e.g., "application/pdf", "image/jpeg")
+    base64: string;    # Base64-encoded file content
+}
+
+Files are converted to base64 for:
+- Storage in application state
+- Transmission to Gemini API (multi-modal input)
+- Display in browser (data URIs)
+
+3.1.4 Prestation Interface
+--------------------------
+interface Prestation {
+    name: string;        # Name of the benefit (e.g., "RSA", "APL")
+    isAccepted: boolean; # Whether the law firm handles this type of appeal
+}
+
+Prestations are detected by AI during case analysis. The isAccepted flag
+determines if the firm can handle the case based on the knowledge base.
+
+3.1.5 ClientSubmission Interface
+---------------------------------
+interface ClientSubmission {
+    // Identification
+    id: string;                    # Sequential case ID (CAS-YYYY-XXX)
+    email: string;                 # Client email address
+    phone: string;                  # Client phone number
+    description: string;            # Client's description of their case
+    
+    // Files
+    files: AttachedFile[];          # Multiple file support
+    
+    // Metadata
+    submittedAt: Date;              # Submission timestamp
+    status: CaseStatus;             # Current case status
+    stage: LegalStage;              # Detected or manually set legal stage
+    
+    // AI Analysis Results
+    prestations: Prestation[];     # Detected benefits and acceptance status
+    
+    // Generated Content
+    generatedEmailDraft?: string;   # AI-generated email to client
+    generatedAppealDraft?: string;   # AI-generated appeal document
+    
+    // AI Prompts (Editable)
+    emailPrompt?: string;            # Prompt used for email generation
+    appealPrompt?: string;           # Prompt used for appeal generation
+}
+
+3.1.6 FormErrors Interface
+--------------------------
+interface FormErrors {
+    email?: string;
+    phone?: string;
+    file?: string;
+    consent?: string;
+}
+
+Used for client-side form validation feedback.
+
+3.2 CASE ID GENERATION
+---------------------
+Case IDs follow a sequential format: CAS-YYYY-XXX
+
+Format Breakdown:
+- Prefix: "CAS-" (Case identifier)
+- Year: Current year (e.g., "2025")
+- Sequence: Zero-padded 3-digit number (001, 002, 003...)
+
+Example: CAS-2025-001, CAS-2025-002, CAS-2025-003
+
+Implementation (App.tsx):
+```typescript
+const generateCaseId = (index: number) => {
+    const year = new Date().getFullYear();
+    const sequence = (index + 1).toString().padStart(3, '0');
+    return `CAS-${year}-${sequence}`;
+};
+```
+
+The index parameter is the current length of the cases array, ensuring
+sequential numbering.
+
+3.3 FILE HANDLING
+----------------
+Files are processed in multiple stages:
+
+1. Client Selection (ClientForm.tsx):
+   - User selects files via file input or drag-and-drop
+   - Files stored as File objects in component state
+   - Multiple files supported (multiple attribute on input)
+
+2. Base64 Conversion (geminiService.ts):
+   - Files converted to base64 using FileReader API
+   - Data URL format: "data:[mimeType];base64,[base64Data]"
+   - Base64 portion extracted (after comma) for API transmission
+
+3. Storage (App.tsx):
+   - AttachedFile objects stored in case.files array
+   - Base64 data stored in memory (no server persistence)
+
+4. Display (LawyerDashboard.tsx):
+   - Files displayed as buttons in case header
+   - Clicking opens file in new window using data URI
+   - Format: data:[mimeType];base64,[base64Data]
+
+Supported File Types:
+- Images: image/* (JPEG, PNG, etc.)
+- Documents: application/pdf
+
+================================================================================
+                       4. AI PIPELINE & WORKFLOW
+================================================================================
+
+4.1 THREE-STEP AI PROCESSING PIPELINE
+--------------------------------------
+The application implements a sophisticated AI pipeline that processes cases
+through three sequential steps:
+
+┌─────────────────────────────────────────────────────────────────┐
+│                    AI PROCESSING PIPELINE                       │
+└─────────────────────────────────────────────────────────────────┘
+
+Step 1: Stage Detection (detectCaseStage)
+    Input:  description (string), files (AttachedFile[])
+    Output: { stage: LegalStage, prestations: Prestation[] }
+    Model:  gemini-2.5-flash
+    Format: JSON with schema validation
+
+Step 2: Prompt Template Generation (getPromptTemplates)
+    Input:  stage (LegalStage), clientName (string), description (string)
+    Output: { emailPrompt: string, appealPrompt: string }
+    Logic:  Stage-specific prompt templates with knowledge base injection
+
+Step 3: Draft Generation (generateSingleDraft)
+    Input:  prompt (string), files (AttachedFile[])
+    Output: Generated text content (string)
+    Model:  gemini-2.5-flash
+    Format: Plain text (no markdown)
+
+4.2 STEP 1: STAGE DETECTION
+--------------------------
+Function: detectCaseStage(description: string, files: AttachedFile[])
+
+Purpose:
+- Analyze client description and uploaded documents
+- Determine the legal stage (CONTROL, RAPO, or LITIGATION)
+- Identify all prestations (benefits) mentioned
+- Determine which prestations the firm can handle (isAccepted)
+
+Implementation Details:
+- Uses Google Gemini 2.5 Flash model
+- Multi-modal input: text description + file images/PDFs
+- Structured JSON output with schema validation
+- Knowledge base injected into prompt for classification rules
+
+Prompt Structure:
+1. Context: Role as administrative law specialist
+2. Knowledge Base: Firm's accepted/refused prestations
+3. Client Description: User-provided case description
+4. Task: Classify stage and identify prestations
+5. Rules: Classification rules for each stage
+6. Output Format: JSON schema definition
+
+Error Handling:
+- On error, defaults to RAPO stage
+- Default prestation: "Non identifiée" with isAccepted: true
+- Errors logged to console
+
+4.3 STEP 2: PROMPT TEMPLATE GENERATION
+--------------------------------------
+Function: getPromptTemplates(stage: LegalStage, clientName: string, 
+                             description: string)
+
+Purpose:
+- Generate stage-specific prompts for email and appeal generation
+- Inject knowledge base and client context
+- Ensure consistent formatting and style guidelines
+
+Implementation Details:
+- Three distinct prompt sets (one per stage)
+- Each stage has separate email and appeal prompts
+- Knowledge base automatically included in all prompts
+- Style guidelines enforced (APA format, no markdown, FALC language)
+
+Prompt Components (Common Header):
+- Context: Role as lawyer for Maître Ilan BRUN-VARGAS
+- Knowledge Base: Full legal reference database
+- Style Guidelines: Formatting rules (APA, no markdown, etc.)
+- Client Information: Name and description
+
+Stage-Specific Variations:
+
+CONTROL Stage:
+- Email: Acknowledgment, situation recap, 10-day observation period,
+  next steps invitation
+- Appeal: Brief "Observations" document for contradictory procedure
+
+RAPO Stage:
+- Email: Acknowledgment, observations on merits, appeal routes,
+  debt remission info, service proposal
+- Appeal: Full RAPO document with specific structure (destinee,
+  suspension requests, etc.)
+
+LITIGATION Stage:
+- Email: Acknowledgment of RAPO rejection, tribunal referral info,
+  procedure explanation, service proposal
+- Appeal: Full "Requête Introductive d'Instance" for Administrative
+  Tribunal with detailed legal structure
+
+4.4 STEP 3: DRAFT GENERATION
+----------------------------
+Function: generateSingleDraft(prompt: string, files: AttachedFile[])
+
+Purpose:
+- Execute AI generation using the provided prompt
+- Include files for context and grounding
+- Return plain text content (no markdown)
+
+Implementation Details:
+- Uses Google Gemini 2.5 Flash model
+- Multi-modal input: prompt text + file images/PDFs
+- Files included for extracting dates, amounts, motives from documents
+- Returns raw text response (no post-processing)
+
+File Integration:
+- All case files included in every generation
+- Files converted to inlineData parts for Gemini API
+- Reference text added: "RÉFÉRENCE : Documents du dossier"
+
+Error Handling:
+- Errors logged to console
+- Exceptions propagated to caller
+- UI shows error messages to user
+
+4.5 KNOWLEDGE BASE INTEGRATION
+------------------------------
+The knowledge base (knowledgeBase.ts) contains comprehensive legal information:
+
+Structure:
+- CSV-like format with THEME and RENSEIGNEMENTS columns
+- Contains information about:
+  * Accepted prestations (✅) and procedures
+  * Refused prestations (❌) and why
+  * Legal references (article numbers, case law)
+  * Procedural requirements (deadlines, recipients)
+  * Suspension rules
+  * Remission conditions
+
+Key Sections:
+- Prestation-specific procedures (RSA, APL, Prime d'activité, etc.)
+- Recourse routes (amiable vs contentieux)
+- Legal deadlines (2 months standard)
+- Suspension effects (RSA/Prime d'activité vs APL)
+- Remission conditions (good faith, precarity, fraud exceptions)
+
+Usage:
+- Injected into all AI prompts
+- Used for stage classification
+- Referenced in generated documents
+- Ensures legal accuracy and consistency
+
+4.6 FILE PROCESSING AND MULTI-MODAL AI INPUT
+--------------------------------------------
+The application leverages Gemini's multi-modal capabilities:
+
+File Conversion:
+1. Files stored as base64 strings
+2. Converted to Gemini API format:
+   {
+     inlineData: {
+       data: base64String,
+       mimeType: mimeType
+     }
+   }
+
+Supported Formats:
+- PDF documents (application/pdf)
+- Images (image/jpeg, image/png, etc.)
+
+Multi-Modal Input Structure:
+- Text parts: Prompts, instructions, context
+- File parts: Document images/PDFs
+- Interleaved: Files can be placed before or after text
+
+Benefits:
+- AI can read and analyze actual CAF documents
+- Extracts dates, amounts, decision numbers automatically
+- Understands document context and structure
+- Reduces manual data entry errors
+
+4.7 ERROR HANDLING AND FALLBACKS
+--------------------------------
+Error Handling Strategy:
+
+Stage Detection:
+- Try-catch around API call
+- On error: Default to RAPO stage
+- Default prestation: "Erreur détection" with isAccepted: true
+- Error logged to console
+
+Draft Generation:
+- Try-catch around API call
+- Errors propagated to caller
+- UI shows user-friendly error messages
+- Regeneration possible via UI
+
+Network Errors:
+- Handled by Gemini SDK
+- User sees error in UI
+- Can retry operation
+
+State Consistency:
+- Cases always have valid state (no null/undefined)
+- Default values provided for all fields
+- UI handles missing data gracefully
+
+================================================================================
+                         5. COMPONENT DETAILS
+================================================================================
+
+5.1 APP.TSX - MAIN ORCHESTRATOR
+-------------------------------
+Location: App.tsx
+Purpose: Root component managing global application state and view routing
+
+Key Responsibilities:
+1. View Management: Switch between CLIENT, LAWYER, SUCCESS views
+2. Case Lifecycle: Create, update, and manage cases
+3. AI Pipeline Orchestration: Coordinate background AI processing
+4. State Management: Maintain cases array and current view
+
+Key Functions:
+
+generateCaseId(index: number): string
+- Generates sequential case IDs (CAS-YYYY-XXX)
+- Uses current year and zero-padded sequence number
+
+handleClientSubmit(data): Promise<void>
+- Creates new case with sequential ID
+- Sets initial state: NEW status, RAPO stage (temporary)
+- Adds case to cases array
+- Switches to SUCCESS view
+- Triggers background AI processing:
+  a. detectCaseStage → updates stage and prestations
+  b. getPromptTemplates → saves prompts to case
+  c. generateSingleDraft (parallel) → generates email and appeal drafts
+  d. Updates case status to PROCESSING when drafts complete
+
+handleUpdateCase(id, updates): void
+- Updates specific case with partial data
+- Uses functional setState to ensure immutability
+- Updates propagate to all components reading cases array
+
+handleRegenerateDraft(id, type, customPrompt): Promise<void>
+- Regenerates email or appeal draft with custom prompt
+- Saves custom prompt to case first
+- Calls generateSingleDraft with updated prompt
+- Updates case with new draft content
+
+handleStageChange(id, newStage): Promise<void>
+- Changes case legal stage
+- Gets new prompts for the stage
+- Clears existing drafts (shows regeneration message)
+- Regenerates both email and appeal drafts in parallel
+- Updates case with new stage, prompts, and drafts
+
+View Rendering:
+- Navigation bar: Persistent across all views, shows case count
+- CLIENT view: Renders ClientForm component
+- SUCCESS view: Confirmation screen with link to lawyer view
+- LAWYER view: Renders LawyerDashboard component
+
+5.2 CLIENTFORM.TSX - CLIENT INTAKE FORM
+---------------------------------------
+Location: components/ClientForm.tsx
+Purpose: Public-facing form for client case submission
+
+Key Features:
+1. Form Validation: Email, phone, file requirements
+2. File Upload: Drag-and-drop and file picker
+3. Multiple Files: Support for multiple document uploads
+4. Base64 Conversion: Converts files before submission
+5. Consent Management: Two required checkboxes
+
+Form Sections:
+
+Section 1: Contact Information
+- Email field (required)
+- Phone field (required)
+- Uses FormInput component for consistent styling
+
+Section 2: CAF Documents
+- File upload area with drag-and-drop
+- Multiple file support
+- File list display with remove functionality
+- Description textarea (optional)
+- Validation: At least one file required
+
+Section 3: Consent Checkboxes
+- Type confirmation: RSA, Prime d'activité, or APL only
+- Privacy consent: Data usage agreement
+- Both required for submission
+
+Section 4: Guarantees
+- Visual guarantees display (no commitment, 24h response)
+
+Key Functions:
+
+handleFileChange(e): void
+- Handles file input change event
+- Converts FileList to Array
+- Appends to existing files array
+- Clears file validation error
+
+handleDrop(e): void
+- Handles drag-and-drop events
+- Prevents default browser behavior
+- Adds dropped files to files array
+- Clears file validation error
+
+removeFile(index, e): void
+- Removes file from files array
+- Prevents event propagation
+- Updates form state
+
+validate(): boolean
+- Validates all form fields
+- Checks email and phone presence
+- Ensures at least one file uploaded
+- Verifies both consent checkboxes checked
+- Sets error messages in errors state
+- Returns true if all validations pass
+
+handleSubmit(): Promise<void>
+- Validates form
+- Converts all files to base64 (AttachedFile[])
+- Calls onSubmit prop with form data
+- Handles errors with user-friendly alerts
+
+File Processing:
+- Files converted to base64 using readFileAsBase64 utility
+- Each file becomes AttachedFile object:
+  { name, mimeType, base64 }
+- All files included in submission
+
+5.3 LAWYERDASHBOARD.TSX - CASE MANAGEMENT INTERFACE
+--------------------------------------------------
+Location: components/LawyerDashboard.tsx
+Purpose: Professional dashboard for lawyers to manage and review cases
+
+Layout:
+- Split-screen design: Sidebar (1/3) + Main Content (2/3)
+- Sidebar: Case list with filtering and status indicators
+- Main: Case detail view with tabs and editing capabilities
+
+Key Features:
+
+1. Case List Sidebar
+   - Displays all cases in reverse chronological order (newest first)
+   - Shows case ID, submission time, email, stage badge
+   - Prestation tags (first 2 visible, +N indicator)
+   - Description preview (truncated)
+   - Click to select case
+   - Visual indicator for selected case (blue background, red left border)
+
+2. Case Detail Header
+   - Case ID and client contact information
+   - Prestation tags with acceptance status
+   - File buttons (open in new window)
+   - Stage selector (interactive buttons)
+
+3. Stage Selector
+   - Three buttons: CONTROL, RAPO, LITIGATION
+   - Active stage highlighted (red background)
+   - Click to change stage (triggers regeneration)
+   - Visual flow indicator (dots between stages)
+
+4. Tab Navigation
+   - Details tab: Case information and prestations
+   - Email tab: Email draft editor
+   - Appeal tab: Appeal draft editor
+
+5. Prompt Editor
+   - Collapsible prompt display
+   - Editable textarea for custom prompts
+   - Used for regeneration with custom instructions
+   - Shows current prompt for selected draft type
+
+6. Draft Editor
+   - A4-sized textarea (297mm height)
+   - Times New Roman font, double spacing
+   - Real-time editing with auto-save on blur
+   - Prevents overwriting user edits during AI updates
+   - Uses refs to track previous values
+
+7. Export Functionality
+   - Email export: Outlook .eml format
+   - Appeal export: Word .doc format (HTML-based)
+   - Downloads files with case ID in filename
+
+Key Functions:
+
+handleContentChange(type, newVal): void
+- Updates local editing state (emailContent or appealContent)
+- Prevents immediate save (waits for blur)
+
+handleBlurSave(type): void
+- Saves edited content to case state
+- Updates refs to prevent overwrite loops
+- Calls onUpdateCase with new draft content
+
+handleRegenerateClick(type): Promise<void>
+- Triggers draft regeneration with current prompt
+- Shows loading state during regeneration
+- Calls onRegenerateDraft prop
+
+handleStageClick(newStage): Promise<void>
+- Changes case legal stage
+- Triggers prompt and draft regeneration
+- Shows immediate feedback (regeneration messages)
+- Calls onStageChange prop
+
+handleExportOutlook(): void
+- Generates .eml file (Outlook email format)
+- Includes recipient, subject, content
+- Downloads file: brouillon_email_[CASE_ID].eml
+
+handleExportWord(): void
+- Generates .doc file (HTML-based Word format)
+- Includes proper formatting (Times New Roman, double spacing)
+- Converts line breaks to paragraphs
+- Downloads file: recours_caf_[CASE_ID].doc
+
+State Management:
+- Local state for editing (emailContent, appealContent)
+- Local state for prompts (currentEmailPrompt, currentAppealPrompt)
+- Refs to track previous values and prevent overwrites
+- Syncs with props when case changes or AI updates
+
+5.4 FORMINPUT.TSX - REUSABLE FORM INPUT
+---------------------------------------
+Location: components/FormInput.tsx
+Purpose: Reusable form input component with consistent styling
+
+Props:
+- label: string - Field label text
+- required?: boolean - Shows red asterisk if true
+- type?: string - Input type (default: "text")
+- value: string - Controlled input value
+- onChange: function - Change handler
+- error?: string - Error message to display
+- multiline?: boolean - Renders textarea if true
+- name: string - Input name attribute
+- placeholder?: string - Placeholder text
+
+Features:
+- Consistent styling with brand colors
+- Error state styling (red border, red background)
+- Focus states (red ring, red border)
+- Support for both input and textarea
+- Error message display below field
+
+Styling:
+- Background: #f0f4fa (light blue-gray)
+- Border: gray-400 (default), brand-red (focus/error)
+- Focus ring: brand-red
+- Error text: brand-red, small size
+
+================================================================================
+                             6. SERVICES
+================================================================================
+
+6.1 GEMINISERVICE.TS - AI SERVICE LAYER
+---------------------------------------
+Location: services/geminiService.ts
+Purpose: Encapsulates all Google Gemini AI interactions
+
+Key Functions:
+
+getAI(): GoogleGenAI
+- Initializes GoogleGenAI client
+- Reads API key from process.env.API_KEY or process.env.GEMINI_API_KEY
+- Throws error if API key missing
+- Returns configured client instance
+
+fileToPart(file: AttachedFile): Part
+- Converts AttachedFile to Gemini API Part format
+- Returns: { inlineData: { data: base64, mimeType } }
+- Used for multi-modal input
+
+detectCaseStage(description, files): Promise<{stage, prestations}>
+- Step 1 of AI pipeline
+- Analyzes case to determine legal stage and prestations
+- Uses gemini-2.5-flash model
+- Structured JSON output with schema validation
+- Returns: { stage: LegalStage, prestations: Prestation[] }
+
+getPromptTemplates(stage, clientName, description): {emailPrompt, appealPrompt}
+- Step 2 of AI pipeline
+- Generates stage-specific prompts
+- Injects knowledge base and client context
+- Returns: { emailPrompt: string, appealPrompt: string }
+- Pure function (no API calls)
+
+generateSingleDraft(prompt, files): Promise<string>
+- Step 3 of AI pipeline
+- Executes AI generation with prompt and files
+- Uses gemini-2.5-flash model
+- Returns plain text content
+- Used for both email and appeal generation
+
+readFileAsBase64(file: File): Promise<string>
+- Utility function for file conversion
+- Uses FileReader API
+- Returns base64 string (data URL portion after comma)
+- Used in ClientForm before submission
+
+API Configuration:
+- Model: gemini-2.5-flash (fast, cost-effective)
+- Response Format: JSON for structured outputs, text for drafts
+- Schema Validation: Used for stage detection (Type.OBJECT with properties)
+
+Error Handling:
+- API errors caught and logged
+- Default values returned for stage detection
+- Exceptions propagated for draft generation (handled by UI)
+
+6.2 KNOWLEDGEBASE.TS - LEGAL KNOWLEDGE BASE
+-------------------------------------------
+Location: services/knowledgeBase.ts
+Purpose: Contains comprehensive legal reference database
+
+Structure:
+- Single exported constant: KNOWLEDGE_BASE
+- CSV-like format: THEME, RENSEIGNEMENTS
+- Contains legal procedures, deadlines, case law, article references
+
+Content Categories:
+
+1. Prestation Procedures
+   - RSA (Revenu de solidarité active) ✅
+   - APL (Aides personnelles au logement) ✅
+   - Prime d'activité ✅
+   - AAH (Allocation aux adultes handicapés) ❌
+   - AEEH (Allocation d'éducation de l'enfant handicapé) ❌
+   - And many more...
+
+2. Legal References
+   - Article numbers (L.262-46 CASF, L.845-2 CSS, etc.)
+   - Case law citations (CE 20 octobre 2017, no. 405572)
+   - Procedural requirements
+
+3. Procedural Information
+   - Recourse routes (amiable vs contentieux)
+   - Deadlines (2 months standard)
+   - Recipients (Président CD, CRA, Directeur CAF)
+   - Suspension effects
+
+4. Acceptance Rules
+   - Which prestations the firm handles (✅)
+   - Which prestations are refused (❌)
+   - Reasons for refusal (tribunal judiciaire, different procedures)
+
+Usage:
+- Injected into all AI prompts
+- Used for stage classification
+- Referenced in generated documents
+- Ensures legal accuracy
+
+Format:
+- Plain text string
+- CSV-like structure for parsing
+- Includes emoji indicators (✅/❌) for quick scanning
+- Comprehensive coverage of relevant legal topics
+
+================================================================================
+                          7. USER WORKFLOWS
+================================================================================
+
+7.1 CLIENT SUBMISSION WORKFLOW
+------------------------------
+┌─────────────────────────────────────────────────────────────────┐
+│                    CLIENT SUBMISSION WORKFLOW                    │
+└─────────────────────────────────────────────────────────────────┘
+
+1. Client accesses application
+   → Sees Client View (default)
+
+2. Client fills out form
+   - Enters email and phone
+   - Uploads CAF documents (drag-and-drop or file picker)
+   - Optionally provides case description
+   - Checks both consent boxes
+
+3. Client clicks "Connaître mes chances de succès"
+   → Form validation runs
+
+4. If validation passes:
+   - Files converted to base64
+   - Form data submitted to handleClientSubmit
+   - New case created with sequential ID
+   - Case added to cases array (status: NEW)
+   - View switches to SUCCESS
+
+5. Background AI processing (async):
+   a. detectCaseStage analyzes case
+      → Updates case: stage, prestations
+   b. getPromptTemplates generates prompts
+      → Updates case: emailPrompt, appealPrompt
+   c. generateSingleDraft (parallel):
+      → Generates email draft
+      → Generates appeal draft
+      → Updates case: generatedEmailDraft, generatedAppealDraft
+      → Updates status: PROCESSING
+
+6. Client sees success message
+   - Can click "Accéder à l'Espace Avocat" to view lawyer interface
+   - Or wait for lawyer to process case
+
+7.2 BACKGROUND AI PROCESSING WORKFLOW
+-------------------------------------
+┌─────────────────────────────────────────────────────────────────┐
+│                 BACKGROUND AI PROCESSING WORKFLOW               │
+└─────────────────────────────────────────────────────────────────┘
+
+Trigger: After case creation in handleClientSubmit
+
+Step 1: Stage Detection
+   Input: description, files
+   Process: AI analyzes documents and description
+   Output: { stage, prestations }
+   Update: case.stage, case.prestations
+
+Step 2: Prompt Generation
+   Input: stage, clientName, description
+   Process: Select stage-specific templates, inject context
+   Output: { emailPrompt, appealPrompt }
+   Update: case.emailPrompt, case.appealPrompt
+
+Step 3: Draft Generation (Parallel)
+   Email Draft:
+      Input: emailPrompt, files
+      Process: AI generates email content
+      Output: email text
+      Update: case.generatedEmailDraft
+   
+   Appeal Draft:
+      Input: appealPrompt, files
+      Process: AI generates appeal document
+      Output: appeal text
+      Update: case.generatedAppealDraft
+
+Final Update: case.status = PROCESSING
+
+Error Handling:
+- If stage detection fails: Default to RAPO, show error prestation
+- If draft generation fails: Error logged, user can regenerate
+- State always remains consistent
+
+7.3 LAWYER REVIEW AND EDITING WORKFLOW
+--------------------------------------
+┌─────────────────────────────────────────────────────────────────┐
+│              LAWYER REVIEW AND EDITING WORKFLOW                 │
+└─────────────────────────────────────────────────────────────────┘
+
+1. Lawyer accesses Lawyer View
+   → Sees case list in sidebar
+   → New cases highlighted (status: NEW)
+
+2. Lawyer selects case from list
+   → Case detail view loads
+   → Shows detected stage and prestations
+
+3. Lawyer reviews case details (Details tab)
+   - Checks prestations (accepted/refused)
+   - Reads client description
+   - Reviews uploaded files
+
+4. Lawyer reviews email draft (Email tab)
+   - Reads AI-generated email
+   - Edits content directly in A4 editor
+   - Changes auto-save on blur
+   - Can edit prompt and regenerate
+
+5. Lawyer reviews appeal draft (Appeal tab)
+   - Reads AI-generated appeal document
+   - Edits content directly in A4 editor
+   - Changes auto-save on blur
+   - Can edit prompt and regenerate
+
+6. Lawyer exports documents
+   - Email: Export as .eml (Outlook format)
+   - Appeal: Export as .doc (Word format)
+   - Files downloaded with case ID
+
+7. Lawyer updates case status
+   - Manually changes status (NEW → REVIEWED → SENT)
+   - Status persists in case state
+
+7.4 STAGE CHANGE AND REGENERATION WORKFLOW
+------------------------------------------
+┌─────────────────────────────────────────────────────────────────┐
+│           STAGE CHANGE AND REGENERATION WORKFLOW                │
+└─────────────────────────────────────────────────────────────────┘
+
+Trigger: Lawyer clicks different stage button in stage selector
+
+1. Lawyer clicks new stage (e.g., RAPO → LITIGATION)
+   → handleStageChange called
+
+2. Immediate UI feedback
+   - Stage updated in case
+   - Prompts updated for new stage
+   - Drafts cleared, show regeneration messages:
+     "♻️ Changement de phase... Régénération de l'email..."
+     "♻️ Changement de phase... Régénération du recours..."
+
+3. Background regeneration (async)
+   - getPromptTemplates called with new stage
+   - generateSingleDraft called in parallel for both drafts
+   - New drafts generated with stage-specific content
+
+4. UI updates with new content
+   - Email draft replaced
+   - Appeal draft replaced
+   - User can continue editing
+
+Error Handling:
+- If regeneration fails: Error message shown in draft field
+- User can manually regenerate via "Régénérer" button
+- Previous content preserved if error occurs
+
+7.5 MANUAL DRAFT REGENERATION WORKFLOW
+-------------------------------------
+┌─────────────────────────────────────────────────────────────────┐
+│            MANUAL DRAFT REGENERATION WORKFLOW                   │
+└─────────────────────────────────────────────────────────────────┘
+
+Trigger: Lawyer clicks "Régénérer le brouillon" button
+
+1. Lawyer edits prompt (optional)
+   - Opens prompt editor
+   - Modifies instructions
+   - Prompt saved to case state
+
+2. Lawyer clicks "Régénérer le brouillon"
+   → handleRegenerateClick called
+   → Loading state shown (spinner, disabled button)
+
+3. Regeneration process
+   - Current prompt retrieved (edited or original)
+   - generateSingleDraft called with prompt and files
+   - AI generates new content
+
+4. UI updates
+   - New draft replaces old content
+   - Loading state cleared
+   - User can continue editing
+
+Benefits:
+- Allows customization of AI output
+- Can refine prompts for better results
+- No need to change stage to regenerate
+- Preserves other case data
+
+================================================================================
+                   8. TECHNICAL IMPLEMENTATION DETAILS
+================================================================================
+
+8.1 ENVIRONMENT VARIABLE HANDLING
+---------------------------------
+API Key Configuration:
+- Environment variable: GEMINI_API_KEY or API_KEY
+- Loaded via Vite's loadEnv in vite.config.ts
+- Injected at build time via define option
+- Available as process.env.GEMINI_API_KEY in code
+
+Vite Configuration (vite.config.ts):
+```typescript
+define: {
+    'process.env.API_KEY': JSON.stringify(env.GEMINI_API_KEY),
+    'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY)
+}
+```
+
+Usage in Code:
+- getAI() function reads process.env.API_KEY
+- Falls back to process.env.GEMINI_API_KEY
+- Throws error if neither present
+
+Security Considerations:
+- API key exposed in client-side code
+- Should use backend proxy in production
+- Current implementation suitable for development/demo
+
+8.2 BUILD CONFIGURATION
+----------------------
+Vite Configuration (vite.config.ts):
+
+Server Settings:
+- Port: 3000
+- Host: 0.0.0.0 (accessible from network)
+
+Plugins:
+- @vitejs/plugin-react: Enables React support
+
+Path Aliases:
+- @/* maps to ./* (root directory)
+- Configured in both vite.config.ts and tsconfig.json
+
+TypeScript Configuration (tsconfig.json):
+
+Compiler Options:
+- Target: ES2022
+- Module: ESNext
+- JSX: react-jsx
+- Module Resolution: bundler
+- No Emit: true (Vite handles compilation)
+
+Build Scripts (package.json):
+- dev: "vite" - Development server
+- build: "vite build" - Production build
+- preview: "vite preview" - Preview production build
+
+8.3 STYLING APPROACH
+-------------------
+Framework: Tailwind CSS (via CDN)
+
+Configuration:
+- Custom brand colors defined in index.html:
+  * brand-red: #cc1e42
+  * brand-dark: #333333
+  * brand-gray: #f5f7fa
+
+Usage:
+- Utility classes throughout components
+- Custom colors used for branding consistency
+- Responsive design with md: breakpoints
+- Font Awesome icons for visual elements
+
+Styling Patterns:
+- Form inputs: Light blue-gray background (#f0f4fa)
+- Brand elements: Red accents (brand-red)
+- Text: Dark gray (brand-dark)
+- Borders: Gray with red focus states
+
+8.4 EXPORT FUNCTIONALITY
+------------------------
+Email Export (.eml format):
+
+Format: RFC 822 email message
+Structure:
+```
+To: [client email]
+Subject: Suivi de votre dossier CAF [CASE_ID]
+X-Unsent: 1
+Content-Type: text/plain; charset=UTF-8
+
+[email content]
+```
+
+Implementation:
+- Creates Blob with type "message/rfc822"
+- Generates download link
+- Filename: brouillon_email_[CASE_ID].eml
+- Opens in Outlook when double-clicked
+
+Word Export (.doc format):
+
+Format: HTML-based Word document
+Structure:
+- HTML wrapper with Office namespaces
+- Embedded CSS for formatting
+- Paragraphs from line breaks
+- UTF-8 BOM for proper encoding
+
+Implementation:
+- Creates HTML document with Word-compatible structure
+- Converts line breaks to <p> tags
+- Embeds Times New Roman font, 12pt, double spacing
+- Creates Blob with type "application/msword"
+- Filename: recours_caf_[CASE_ID].doc
+- Opens in Word when double-clicked
+
+8.5 STATE MANAGEMENT PATTERNS
+------------------------------
+Immutability:
+- All state updates use functional setState
+- Spread operator for object updates
+- Array methods (map, filter) for array updates
+- Prevents direct mutation
+
+State Synchronization:
+- LawyerDashboard uses refs to track previous values
+- Prevents overwriting user edits with stale props
+- useEffect syncs local state with props when appropriate
+- Blur events trigger saves
+
+Concurrent Updates:
+- Multiple setState calls batched by React
+- Functional updates ensure consistency
+- Example: handleClientSubmit updates case multiple times
+
+8.6 FILE HANDLING IMPLEMENTATION
+--------------------------------
+FileReader API Usage:
+- Asynchronous file reading
+- readAsDataURL method
+- Returns data URL: "data:[mimeType];base64,[data]"
+- Base64 extracted (after comma)
+
+Memory Considerations:
+- All files stored in memory as base64
+- No server persistence
+- Large files may impact performance
+- Consider file size limits in production
+
+Display Implementation:
+- Files opened in new window using data URI
+- iframe with data URI as src
+- Supports PDF and image viewing
+- No download required
+
+8.7 ERROR HANDLING STRATEGIES
+----------------------------
+API Errors:
+- Try-catch blocks around all API calls
+- Errors logged to console
+- User-friendly error messages
+- Graceful degradation (default values)
+
+Validation Errors:
+- Client-side validation before submission
+- Error messages displayed inline
+- Prevents invalid submissions
+- Clear error indicators (red borders, text)
+
+State Errors:
+- Default values for all optional fields
+- Null checks before accessing properties
+- Safe navigation patterns
+- UI handles missing data gracefully
+
+================================================================================
+                        9. DATA FLOW DIAGRAMS
+================================================================================
+
+9.1 CLIENT SUBMISSION → CASE CREATION → AI ANALYSIS → DRAFT GENERATION
+-----------------------------------------------------------------------
+
+┌─────────────┐
+│   Client    │
+│   Form      │
+└──────┬──────┘
+       │
+       │ 1. Submit form (email, phone, files, description)
+       ▼
+┌─────────────────┐
+│  handleClient    │
+│  Submit          │
+└──────┬───────────┘
+       │
+       │ 2. Generate case ID (CAS-YYYY-XXX)
+       │ 3. Create ClientSubmission object
+       │ 4. Add to cases array (status: NEW)
+       │ 5. Switch to SUCCESS view
+       │
+       ▼
+┌─────────────────────────────┐
+│   Background AI Processing   │
+│   (Async, no blocking)       │
+└──────┬──────────────────────┘
+       │
+       ├─→ Step 1: detectCaseStage
+       │   │
+       │   │ Input: description, files
+       │   │ Process: AI analysis
+       │   │ Output: { stage, prestations }
+       │   │
+       │   └─→ Update case: stage, prestations
+       │
+       ├─→ Step 2: getPromptTemplates
+       │   │
+       │   │ Input: stage, clientName, description
+       │   │ Process: Template selection + injection
+       │   │ Output: { emailPrompt, appealPrompt }
+       │   │
+       │   └─→ Update case: emailPrompt, appealPrompt
+       │
+       └─→ Step 3: generateSingleDraft (Parallel)
+           │
+           ├─→ Email Draft
+           │   │ Input: emailPrompt, files
+           │   │ Process: AI generation
+           │   │ Output: email text
+           │   └─→ Update case: generatedEmailDraft
+           │
+           └─→ Appeal Draft
+               │ Input: appealPrompt, files
+               │ Process: AI generation
+               │ Output: appeal text
+               └─→ Update case: generatedAppealDraft, status: PROCESSING
+
+9.2 STAGE CHANGE → PROMPT REGENERATION → DRAFT REGENERATION
+-----------------------------------------------------------
+
+┌─────────────┐
+│   Lawyer    │
+│   Clicks    │
+│   Stage     │
+│   Button    │
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────┐
+│ handleStage     │
+│ Change          │
+└──────┬──────────┘
+       │
+       │ 1. Get new prompts for stage
+       │ 2. Update case: stage, prompts
+       │ 3. Clear drafts (show regeneration message)
+       │
+       ▼
+┌─────────────────────────────┐
+│   Background Regeneration   │
+│   (Async)                    │
+└──────┬──────────────────────┘
+       │
+       └─→ generateSingleDraft (Parallel)
+           │
+           ├─→ Email Draft
+           │   │ Input: new emailPrompt, files
+           │   │ Process: AI generation
+           │   │ Output: new email text
+           │   └─→ Update case: generatedEmailDraft
+           │
+           └─→ Appeal Draft
+               │ Input: new appealPrompt, files
+               │ Process: AI generation
+               │ Output: new appeal text
+               └─→ Update case: generatedAppealDraft
+
+9.3 MANUAL DRAFT REGENERATION WITH CUSTOM PROMPTS
+-------------------------------------------------
+
+┌─────────────┐
+│   Lawyer    │
+│   Edits     │
+│   Prompt    │
+│   (Optional)│
+└──────┬──────┘
+       │
+       │ 1. Update local prompt state
+       │ 2. Save prompt to case
+       │
+       ▼
+┌─────────────┐
+│   Lawyer    │
+│   Clicks    │
+│   Regenerate│
+└──────┬──────┘
+       │
+       ▼
+┌─────────────────┐
+│ handleRegenerate│
+│ Draft           │
+└──────┬──────────┘
+       │
+       │ 1. Get current prompt (edited or original)
+       │ 2. Show loading state
+       │
+       ▼
+┌─────────────────────────────┐
+│   AI Generation              │
+└──────┬───────────────────────┘
+       │
+       │ Input: customPrompt, files
+       │ Process: AI generation
+       │ Output: new draft text
+       │
+       ▼
+┌─────────────────┐
+│   Update Case   │
+│   with New      │
+│   Draft         │
+└─────────────────┘
+
+9.4 COMPONENT DATA FLOW
+-----------------------
+
+App.tsx (Global State)
+    │
+    ├─→ cases: ClientSubmission[]
+    │   │
+    │   ├─→ ClientForm
+    │   │   │ (Read: none)
+    │   │   └─→ (Write: onSubmit → creates new case)
+    │   │
+    │   └─→ LawyerDashboard
+    │       │ (Read: cases array)
+    │       │
+    │       ├─→ Case List (displays all cases)
+    │       │
+    │       └─→ Case Detail (displays selected case)
+    │           │
+    │           ├─→ Reads: case data
+    │           ├─→ Writes: onUpdateCase (edits)
+    │           ├─→ Writes: onRegenerateDraft (regeneration)
+    │           └─→ Writes: onStageChange (stage updates)
+
+State Updates Flow:
+1. User action (form submit, edit, regenerate)
+2. Handler function called
+3. setCases called with functional update
+4. React re-renders components
+5. Updated data flows to child components
+
+================================================================================
+                              CONCLUSION
+================================================================================
+
+This documentation provides a comprehensive overview of the LegalEase CAF Manager
+application's initial version. The application demonstrates a sophisticated
+integration of AI capabilities with legal case management, providing lawyers
+with an efficient tool for handling administrative appeals.
+
+Key Technical Highlights:
+- Client-side AI processing using Google Gemini
+- Multi-modal document analysis (text + images/PDFs)
+- Stage-based workflow with dynamic prompt generation
+- Real-time draft editing with auto-save
+- Professional document export functionality
+- Comprehensive legal knowledge base integration
+
+The architecture is designed for extensibility, with clear separation of
+concerns and modular component structure. The AI pipeline is flexible and
+allows for prompt customization and regeneration.
+
+Future enhancements could include:
+- Backend persistence for cases
+- User authentication and authorization
+- Email integration for sending drafts
+- Case history and versioning
+- Advanced search and filtering
+- Multi-lawyer collaboration features
+
+================================================================================
+                            END OF DOCUMENTATION
+================================================================================
+
