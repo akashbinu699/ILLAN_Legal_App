@@ -1,0 +1,5 @@
+{
+  "name": "LegalEase CAF Backend",
+  "description": "A comprehensive backend for lawyers to manage administrative appeals (recours) against the CAF, featuring a public intake form and AI-powered document drafting.",
+  "requestFramePermissions": []
+}
