@@ -59,20 +59,35 @@ class ApiClient {
         options: RequestInit = {}
     ): Promise<T> {
         const url = `${this.baseUrl}${endpoint}`;
-        const response = await fetch(url, {
-            ...options,
-            headers: {
-                'Content-Type': 'application/json',
-                ...options.headers,
-            },
-        });
+        
+        try {
+            const response = await fetch(url, {
+                ...options,
+                headers: {
+                    'Content-Type': 'application/json',
+                    ...options.headers,
+                },
+            });
 
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({ detail: response.statusText }));
-            throw new Error(error.detail || `HTTP error! status: ${response.status}`);
+            if (!response.ok) {
+                let errorMessage = `HTTP error! status: ${response.status}`;
+                try {
+                    const error = await response.json();
+                    errorMessage = error.detail || error.message || errorMessage;
+                } catch {
+                    errorMessage = response.statusText || errorMessage;
+                }
+                throw new Error(errorMessage);
+            }
+
+            return response.json();
+        } catch (error) {
+            // Handle network errors (backend not running, CORS, etc.)
+            if (error instanceof TypeError && error.message.includes('fetch')) {
+                throw new Error(`Cannot connect to backend at ${url}. Make sure the backend server is running on port 8000.`);
+            }
+            throw error;
         }
-
-        return response.json();
     }
 
     async submitCase(submission: ApiSubmission): Promise<ApiCase> {

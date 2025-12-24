@@ -91,7 +91,8 @@ export default function App() {
                 setTimeout(() => loadCasesFromBackend(), 2000);
             } catch (error) {
                 console.error("Backend submission failed:", error);
-                alert("Erreur lors de l'envoi. Vérifiez que le backend est démarré.");
+                const errorMessage = error instanceof Error ? error.message : "Erreur inconnue";
+                alert(`Erreur lors de l'envoi: ${errorMessage}\n\nVérifiez que le backend est démarré sur http://localhost:8000`);
             }
         } else {
             // Original direct Gemini API flow

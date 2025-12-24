@@ -60,7 +60,7 @@ async def submit_case(
         )
     )
     
-    return SubmissionResponse.from_orm(db_submission)
+    return SubmissionResponse.model_validate(db_submission)
 
 @router.get("/cases", response_model=List[CaseResponse])
 async def get_cases(
