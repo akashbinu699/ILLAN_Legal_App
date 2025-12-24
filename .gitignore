@@ -9,6 +9,25 @@
 node_modules/
 package-lock.json
 
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+.venv
+*.egg-info/
+dist/
+build/
+
+# Backend specific
+backend/token.json
+backend/credentials.json
+backend/__pycache__/
+
 # Build outputs
 dist/
 build/
@@ -26,7 +45,14 @@ build/
 coverage/
 .nyc_output/
 
+# Data
+data/
+*.db
+*.db-journal
+
+# ChromaDB
+chroma_db/
+
 # Misc
 *.pem
 .cache/
-

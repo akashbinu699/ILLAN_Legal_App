@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ClientSubmission, CaseStatus, LegalStage } from '../types';
+import { QueryInterface } from './QueryInterface';
 
 interface LawyerDashboardProps {
     cases: ClientSubmission[];
@@ -10,7 +11,7 @@ interface LawyerDashboardProps {
 
 export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, onUpdateCase, onRegenerateDraft, onStageChange }) => {
     const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
-    const [activeTab, setActiveTab] = useState<'details' | 'email' | 'appeal'>('email');
+    const [activeTab, setActiveTab] = useState<'details' | 'email' | 'appeal' | 'query'>('email');
     const [regenerating, setRegenerating] = useState<'email' | 'appeal' | null>(null);
     const [showPrompt, setShowPrompt] = useState(true);
     
@@ -257,6 +258,7 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, onUpdat
                              <button onClick={() => setActiveTab('details')} className={`px-4 py-2 text-sm font-medium rounded-t-lg mr-2 transition-all ${activeTab === 'details' ? 'bg-white text-brand-red border-t border-l border-r' : 'text-gray-500 hover:text-gray-700'}`}>Détails</button>
                             <button onClick={() => setActiveTab('email')} className={`px-4 py-2 text-sm font-medium rounded-t-lg mr-2 flex items-center transition-all ${activeTab === 'email' ? 'bg-white text-brand-red border-t border-l border-r' : 'text-gray-500 hover:text-gray-700'}`}><i className="fas fa-magic mr-2 text-yellow-500"></i> Projet d'Email</button>
                             <button onClick={() => setActiveTab('appeal')} className={`px-4 py-2 text-sm font-medium rounded-t-lg mr-2 flex items-center transition-all ${activeTab === 'appeal' ? 'bg-white text-brand-red border-t border-l border-r' : 'text-gray-500 hover:text-gray-700'}`}><i className="fas fa-balance-scale mr-2 text-blue-500"></i> Projet de Recours</button>
+                            <button onClick={() => setActiveTab('query')} className={`px-4 py-2 text-sm font-medium rounded-t-lg mr-2 flex items-center transition-all ${activeTab === 'query' ? 'bg-white text-brand-red border-t border-l border-r' : 'text-gray-500 hover:text-gray-700'}`}><i className="fas fa-search mr-2 text-green-500"></i> RAG Query</button>
                         </div>
 
                         {/* Content Area */}
@@ -295,6 +297,12 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, onUpdat
 
                                     <h3 className="font-bold text-lg mb-4 text-gray-800 border-b pb-2">Description du Client</h3>
                                     <p className="text-gray-700 leading-relaxed whitespace-pre-wrap">{selectedCase.description || "Pas de description fournie."}</p>
+                                </div>
+                            )}
+
+                            {activeTab === 'query' && (
+                                <div className="max-w-5xl mx-auto">
+                                    <QueryInterface caseId={selectedCase.id} />
                                 </div>
                             )}
 

@@ -1,8 +1,9 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { ClientForm } from './components/ClientForm';
 import { LawyerDashboard } from './components/LawyerDashboard';
 import { ClientSubmission, CaseStatus, LegalStage } from './types';
 import { detectCaseStage, getPromptTemplates, generateSingleDraft } from './services/geminiService';
+import { apiClient } from './services/apiClient';
 
 enum View {
     CLIENT = 'CLIENT',
@@ -13,6 +14,38 @@ enum View {
 export default function App() {
     const [currentView, setCurrentView] = useState<View>(View.CLIENT);
     const [cases, setCases] = useState<ClientSubmission[]>([]);
+    const [useBackend, setUseBackend] = useState<boolean>(true); // Toggle for backend vs direct Gemini
+    
+    // Load cases from backend on mount
+    useEffect(() => {
+        if (useBackend) {
+            loadCasesFromBackend();
+        }
+    }, [useBackend]);
+    
+    const loadCasesFromBackend = async () => {
+        try {
+            const apiCases = await apiClient.getCases();
+            // Convert API cases to ClientSubmission format
+            const convertedCases: ClientSubmission[] = apiCases.map(apiCase => ({
+                id: apiCase.case_id,
+                email: apiCase.email,
+                phone: apiCase.phone,
+                description: apiCase.description,
+                files: [], // Files not included in API response
+                submittedAt: new Date(apiCase.submitted_at),
+                status: apiCase.status as CaseStatus,
+                stage: apiCase.stage as LegalStage,
+                prestations: apiCase.prestations || [],
+                generatedEmailDraft: apiCase.generatedEmailDraft,
+                generatedAppealDraft: apiCase.generatedAppealDraft
+            }));
+            setCases(convertedCases);
+        } catch (error) {
+            console.error("Failed to load cases from backend:", error);
+            // Fallback to empty array
+        }
+    };
 
     const generateCaseId = (index: number) => {
         const year = new Date().getFullYear();
@@ -22,60 +55,93 @@ export default function App() {
     };
 
     const handleClientSubmit = async (data: Omit<ClientSubmission, 'id' | 'status' | 'submittedAt' | 'stage' | 'prestations' | 'generatedEmailDraft' | 'generatedAppealDraft'>) => {
-        // 1. Init Case with sequential ID
-        const newId = generateCaseId(cases.length);
-        
-        const newCase: ClientSubmission = {
-            id: newId,
-            submittedAt: new Date(),
-            status: CaseStatus.NEW,
-            stage: LegalStage.RAPO, // Temporary default
-            prestations: [], // Initial empty array
-            ...data
-        };
-
-        setCases(prev => [newCase, ...prev]);
-        setCurrentView(View.SUCCESS);
-
-        // 2. Background Process: Detect Stage -> Generate Prompts -> Generate Drafts
-        try {
-            // A. Detect Stage & Prestations
-            const analysisResult = await detectCaseStage(newCase.description, newCase.files);
+        if (useBackend) {
+            // Use backend API
+            try {
+                const response = await apiClient.submitCase({
+                    email: data.email,
+                    phone: data.phone,
+                    description: data.description,
+                    files: data.files.map(f => ({
+                        name: f.name,
+                        mimeType: f.mimeType,
+                        base64: f.base64
+                    }))
+                });
+                
+                // Convert to ClientSubmission format
+                const newCase: ClientSubmission = {
+                    id: response.case_id,
+                    email: response.email,
+                    phone: response.phone,
+                    description: response.description,
+                    files: data.files,
+                    submittedAt: new Date(response.submitted_at),
+                    status: response.status as CaseStatus,
+                    stage: response.stage as LegalStage,
+                    prestations: response.prestations || [],
+                    generatedEmailDraft: response.generatedEmailDraft,
+                    generatedAppealDraft: response.generatedAppealDraft
+                };
+                
+                setCases(prev => [newCase, ...prev]);
+                setCurrentView(View.SUCCESS);
+                
+                // Reload cases after a delay to get updated status
+                setTimeout(() => loadCasesFromBackend(), 2000);
+            } catch (error) {
+                console.error("Backend submission failed:", error);
+                alert("Erreur lors de l'envoi. Vérifiez que le backend est démarré.");
+            }
+        } else {
+            // Original direct Gemini API flow
+            const newId = generateCaseId(cases.length);
             
-            // Update stage and prestations in state
-            setCases(prev => prev.map(c => c.id === newCase.id ? { 
-                ...c, 
-                stage: analysisResult.stage,
-                prestations: analysisResult.prestations
-            } : c));
+            const newCase: ClientSubmission = {
+                id: newId,
+                submittedAt: new Date(),
+                status: CaseStatus.NEW,
+                stage: LegalStage.RAPO,
+                prestations: [],
+                ...data
+            };
 
-            // B. Get Prompts based on stage
-            const { emailPrompt, appealPrompt } = getPromptTemplates(analysisResult.stage, "Client", newCase.description);
-            
-            // Save prompts
-            setCases(prev => prev.map(c => c.id === newCase.id ? { ...c, emailPrompt, appealPrompt } : c));
+            setCases(prev => [newCase, ...prev]);
+            setCurrentView(View.SUCCESS);
 
-            // C. Generate Drafts in parallel
-            const [emailDraft, appealDraft] = await Promise.all([
-                generateSingleDraft(emailPrompt, newCase.files),
-                generateSingleDraft(appealPrompt, newCase.files)
-            ]);
+            try {
+                const analysisResult = await detectCaseStage(newCase.description, newCase.files);
+                
+                setCases(prev => prev.map(c => c.id === newCase.id ? { 
+                    ...c, 
+                    stage: analysisResult.stage,
+                    prestations: analysisResult.prestations
+                } : c));
 
-            // Save Drafts
-            setCases(prev => prev.map(c => {
-                if (c.id === newCase.id) {
-                    return {
-                        ...c,
-                        generatedEmailDraft: emailDraft,
-                        generatedAppealDraft: appealDraft,
-                        status: CaseStatus.PROCESSING
-                    };
-                }
-                return c;
-            }));
+                const { emailPrompt, appealPrompt } = getPromptTemplates(analysisResult.stage, "Client", newCase.description);
+                
+                setCases(prev => prev.map(c => c.id === newCase.id ? { ...c, emailPrompt, appealPrompt } : c));
 
-        } catch (error) {
-            console.error("AI Pipeline failed", error);
+                const [emailDraft, appealDraft] = await Promise.all([
+                    generateSingleDraft(emailPrompt, newCase.files),
+                    generateSingleDraft(appealPrompt, newCase.files)
+                ]);
+
+                setCases(prev => prev.map(c => {
+                    if (c.id === newCase.id) {
+                        return {
+                            ...c,
+                            generatedEmailDraft: emailDraft,
+                            generatedAppealDraft: appealDraft,
+                            status: CaseStatus.PROCESSING
+                        };
+                    }
+                    return c;
+                }));
+
+            } catch (error) {
+                console.error("AI Pipeline failed", error);
+            }
         }
     };
 
