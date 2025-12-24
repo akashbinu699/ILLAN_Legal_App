@@ -41,6 +41,11 @@ export interface ApiCase {
     appealPrompt?: string;
 }
 
+export interface EmailGroup {
+    email: string;
+    cases: ApiCase[];
+}
+
 export interface CaseUpdate {
     generatedEmailDraft?: string;
     generatedAppealDraft?: string;
@@ -109,9 +114,27 @@ class ApiClient {
                 let errorMessage = `HTTP error! status: ${response.status}`;
                 try {
                     const error = await response.json();
-                    errorMessage = error.detail || error.message || errorMessage;
-                } catch {
-                    errorMessage = response.statusText || errorMessage;
+                    // Handle different error response formats
+                    if (typeof error === 'string') {
+                        errorMessage = error;
+                    } else if (error.detail) {
+                        // FastAPI validation errors can be a list or a string
+                        if (Array.isArray(error.detail)) {
+                            errorMessage = error.detail.map((e: any) => {
+                                if (typeof e === 'string') return e;
+                                if (e.msg) return `${e.loc?.join('.') || ''}: ${e.msg}`;
+                                return JSON.stringify(e);
+                            }).join(', ');
+                        } else {
+                            errorMessage = String(error.detail);
+                        }
+                    } else if (error.message) {
+                        errorMessage = String(error.message);
+                    } else {
+                        errorMessage = JSON.stringify(error);
+                    }
+                } catch (parseError) {
+                    errorMessage = response.statusText || `HTTP ${response.status} error`;
                 }
                 throw new Error(errorMessage);
             }
@@ -138,8 +161,8 @@ class ApiClient {
         });
     }
 
-    async getCases(): Promise<ApiCase[]> {
-        return this.request<ApiCase[]>('/cases');
+    async getCases(): Promise<EmailGroup[]> {
+        return this.request<EmailGroup[]>('/cases');
     }
 
     async getCase(caseId: string): Promise<ApiCase> {
@@ -168,6 +191,26 @@ class ApiClient {
 
     async getCaseQueries(caseId: string): Promise<QueryHistory[]> {
         return this.request<QueryHistory[]>(`/case/${caseId}/queries`);
+    }
+
+    async generateDraft(caseId: string, prompt: string, draftType: 'email' | 'appeal'): Promise<{ draft: string; prompt: string }> {
+        return this.request<{ draft: string; prompt: string }>(`/case/${caseId}/generate-draft`, {
+            method: 'POST',
+            body: JSON.stringify({
+                prompt: prompt,
+                draft_type: draftType
+            }),
+        });
+    }
+
+    async detectStage(description: string, files: Array<{ name: string; mimeType: string; base64: string }> = []): Promise<{ stage: string; prestations: Array<{ name: string; isAccepted: boolean }> }> {
+        return this.request<{ stage: string; prestations: Array<{ name: string; isAccepted: boolean }> }>('/detect-stage', {
+            method: 'POST',
+            body: JSON.stringify({
+                description: description,
+                files: files
+            }),
+        });
     }
 }
 

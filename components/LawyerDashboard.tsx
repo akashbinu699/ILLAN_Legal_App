@@ -1,20 +1,22 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { ClientSubmission, CaseStatus, LegalStage } from '../types';
 import { QueryInterface } from './QueryInterface';
 import { apiClient } from '../services/apiClient';
 
 interface LawyerDashboardProps {
     cases: ClientSubmission[];
+    emailGroups: Array<{ email: string; cases: ClientSubmission[] }>;
     onUpdateCase: (id: string, updates: Partial<ClientSubmission>) => void;
     onRegenerateDraft: (id: string, type: 'email' | 'appeal', customPrompt: string) => Promise<void>;
     onStageChange: (id: string, newStage: LegalStage) => Promise<void>;
 }
 
-export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, onUpdateCase, onRegenerateDraft, onStageChange }) => {
+export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, emailGroups, onUpdateCase, onRegenerateDraft, onStageChange }) => {
     const [selectedCaseId, setSelectedCaseId] = useState<string | null>(null);
     const [activeTab, setActiveTab] = useState<'details' | 'email' | 'appeal' | 'query'>('email');
     const [regenerating, setRegenerating] = useState<'email' | 'appeal' | null>(null);
     const [showPrompt, setShowPrompt] = useState(true);
+    const [expandedEmails, setExpandedEmails] = useState<Set<string>>(new Set());
     
     // Local editing state
     const [emailContent, setEmailContent] = useState('');
@@ -37,19 +39,60 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, onUpdat
     const emailPromptSaveTimer = useRef<NodeJS.Timeout | null>(null);
     const appealPromptSaveTimer = useRef<NodeJS.Timeout | null>(null);
 
+    // Track the last loaded case ID to prevent re-loading
+    const lastLoadedCaseIdRef = useRef<string | null>(null);
+    
     // Load case from backend when selected
     useEffect(() => {
-        if (selectedCaseId) {
+        if (selectedCaseId && selectedCaseId !== lastLoadedCaseIdRef.current) {
+            lastLoadedCaseIdRef.current = selectedCaseId;
             loadCaseFromBackend(selectedCaseId);
+            
+            // Auto-expand the email group for the selected case
+            const selectedCase = cases.find(c => c.id === selectedCaseId);
+            if (selectedCase) {
+                setExpandedEmails(prev => {
+                    const newSet = new Set(prev);
+                    newSet.add(selectedCase.email);
+                    return newSet;
+                });
+            }
         }
-    }, [selectedCaseId]);
+        // Reset ref when case is deselected
+        if (!selectedCaseId) {
+            lastLoadedCaseIdRef.current = null;
+        }
+    }, [selectedCaseId]); // Removed 'cases' from dependencies to prevent re-render loops
 
+    // Track the selected case ID to only sync when it actually changes
+    const syncedCaseIdRef = useRef<string | null>(null);
+    
     // Sync state when case changes or when AI updates the draft
     useEffect(() => {
-        if (selectedCase) {
-            // Only update local state if the prop changed from outside (e.g. AI finished, or switched case)
-            // We ignore updates if they match what we just saved (to prevent loop)
+        if (!selectedCase || !selectedCaseId) {
+            // No case selected - clear state
+            if (syncedCaseIdRef.current !== null) {
+                syncedCaseIdRef.current = null;
+                setEmailContent('');
+                setAppealContent('');
+                setCurrentEmailPrompt('');
+                setCurrentAppealPrompt('');
+            }
+            return;
+        }
+        
+        if (selectedCaseId !== syncedCaseIdRef.current) {
+            // Case changed - reset refs and sync all content
+            syncedCaseIdRef.current = selectedCaseId;
+            prevEmailRef.current = selectedCase.generatedEmailDraft;
+            prevAppealRef.current = selectedCase.generatedAppealDraft;
             
+            setEmailContent(selectedCase.generatedEmailDraft || '');
+            setAppealContent(selectedCase.generatedAppealDraft || '');
+            setCurrentEmailPrompt(selectedCase.emailPrompt || '');
+            setCurrentAppealPrompt(selectedCase.appealPrompt || '');
+        } else {
+            // Same case - only update if content changed from outside (e.g., AI finished)
             // For Email
             if (selectedCase.generatedEmailDraft !== prevEmailRef.current) {
                 setEmailContent(selectedCase.generatedEmailDraft || '');
@@ -62,48 +105,65 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, onUpdat
                 prevAppealRef.current = selectedCase.generatedAppealDraft;
             }
 
-            // Prompts can just sync directly as they aren't edited as aggressively
-            if (selectedCase.emailPrompt !== currentEmailPrompt && selectedCase.emailPrompt) {
+            // Prompts - only update if they changed and we don't have local edits
+            if (selectedCase.emailPrompt && selectedCase.emailPrompt !== currentEmailPrompt) {
                 setCurrentEmailPrompt(selectedCase.emailPrompt);
             }
-            if (selectedCase.appealPrompt !== currentAppealPrompt && selectedCase.appealPrompt) {
+            if (selectedCase.appealPrompt && selectedCase.appealPrompt !== currentAppealPrompt) {
                 setCurrentAppealPrompt(selectedCase.appealPrompt);
             }
         }
-    }, [selectedCase, selectedCase?.generatedEmailDraft, selectedCase?.generatedAppealDraft, selectedCase?.emailPrompt, selectedCase?.appealPrompt]);
+    }, [selectedCaseId, selectedCase?.id, selectedCase?.generatedEmailDraft, selectedCase?.generatedAppealDraft, selectedCase?.emailPrompt, selectedCase?.appealPrompt, currentEmailPrompt, currentAppealPrompt]);
 
     const loadCaseFromBackend = async (caseId: string) => {
+        // Prevent concurrent loads of the same case
+        if (loadingCase && lastLoadedCaseIdRef.current === caseId) {
+            return;
+        }
+        
         setLoadingCase(true);
         try {
             const apiCase = await apiClient.getCase(caseId);
             
-            // Check if drafts need to be generated
-            if (!apiCase.generatedEmailDraft || !apiCase.generatedAppealDraft) {
-                // Generate drafts if missing
-                try {
-                    const updatedCase = await apiClient.generateDrafts(caseId);
-                    // Update local state with generated drafts
-                    onUpdateCase(caseId, {
-                        generatedEmailDraft: updatedCase.generatedEmailDraft,
-                        generatedAppealDraft: updatedCase.generatedAppealDraft,
-                        emailPrompt: updatedCase.emailPrompt,
-                        appealPrompt: updatedCase.appealPrompt
-                    });
-                } catch (error) {
-                    console.error("Failed to generate drafts:", error);
-                }
-            } else {
-                // Update local state with loaded data
+            // Only update if this is still the selected case
+            if (selectedCaseId === caseId) {
+                // Always update local state immediately with whatever data we have
+                // This allows the UI to display the case right away
                 onUpdateCase(caseId, {
                     generatedEmailDraft: apiCase.generatedEmailDraft,
                     generatedAppealDraft: apiCase.generatedAppealDraft,
                     emailPrompt: apiCase.emailPrompt,
                     appealPrompt: apiCase.appealPrompt
                 });
+                
+                // Clear loading state immediately so UI can render
+                setLoadingCase(false);
+                
+                // Generate drafts in background if missing (non-blocking)
+                if (!apiCase.generatedEmailDraft || !apiCase.generatedAppealDraft) {
+                    // Generate drafts asynchronously without blocking UI
+                    apiClient.generateDrafts(caseId)
+                        .then((updatedCase) => {
+                            // Only update if this is still the selected case
+                            if (selectedCaseId === caseId) {
+                                onUpdateCase(caseId, {
+                                    generatedEmailDraft: updatedCase.generatedEmailDraft,
+                                    generatedAppealDraft: updatedCase.generatedAppealDraft,
+                                    emailPrompt: updatedCase.emailPrompt,
+                                    appealPrompt: updatedCase.appealPrompt
+                                });
+                            }
+                        })
+                        .catch((error) => {
+                            console.error("Failed to generate drafts:", error);
+                        });
+                }
+            } else {
+                // Case changed, clear loading
+                setLoadingCase(false);
             }
         } catch (error) {
             console.error("Failed to load case from backend:", error);
-        } finally {
             setLoadingCase(false);
         }
     };
@@ -196,6 +256,47 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, onUpdat
         }
     };
 
+    const toggleEmailExpansion = (email: string) => {
+        setExpandedEmails(prev => {
+            const newSet = new Set(prev);
+            if (newSet.has(email)) {
+                newSet.delete(email);
+            } else {
+                newSet.add(email);
+            }
+            return newSet;
+        });
+    };
+
+    // Group cases by email if emailGroups is not provided (fallback)
+    const groupedCases = useMemo(() => {
+        // Prefer emailGroups if available and not empty
+        if (emailGroups && emailGroups.length > 0) {
+            return emailGroups;
+        }
+        // Fallback: group cases by email from the flat cases list
+        if (cases && cases.length > 0) {
+            const groups = new Map<string, ClientSubmission[]>();
+            cases.forEach(c => {
+                if (!groups.has(c.email)) {
+                    groups.set(c.email, []);
+                }
+                groups.get(c.email)!.push(c);
+            });
+            return Array.from(groups.entries()).map(([email, cases]) => ({
+                email,
+                cases: cases.sort((a, b) => b.submittedAt.getTime() - a.submittedAt.getTime()) // Newest first
+            })).sort((a, b) => {
+                // Sort groups by most recent case
+                const aLatest = a.cases[0]?.submittedAt.getTime() || 0;
+                const bLatest = b.cases[0]?.submittedAt.getTime() || 0;
+                return bLatest - aLatest;
+            });
+        }
+        // Return empty array if no cases
+        return [];
+    }, [emailGroups, cases]);
+
     const handleExportOutlook = () => {
         if (!selectedCase) return;
         const emlContent = `To: ${selectedCase.email}\nSubject: Suivi de votre dossier CAF ${selectedCase.id}\nX-Unsent: 1\nContent-Type: text/plain; charset=UTF-8\n\n${emailContent}`;
@@ -265,42 +366,74 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, onUpdat
                     <span className="bg-brand-red text-white text-xs px-2 py-1 rounded-full">{cases.length}</span>
                 </div>
                 <ul>
-                    {cases.map(c => (
-                        <li 
-                            key={c.id} 
-                            onClick={() => setSelectedCaseId(c.id)}
-                            className={`p-4 border-b cursor-pointer hover:bg-blue-50 transition-colors ${selectedCaseId === c.id ? 'bg-blue-50 border-l-4 border-l-brand-red' : ''}`}
-                        >
-                            <div className="flex justify-between mb-1">
-                                <span className="font-bold text-gray-800">{c.id}</span>
-                                <span className="text-xs text-gray-400">{c.submittedAt.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
-                            </div>
-                            <div className="flex items-center justify-between mb-2">
-                                <span className="text-sm font-medium truncate w-1/2">{c.email}</span>
-                                <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded border ${
-                                    c.stage === LegalStage.CONTROL ? 'bg-yellow-50 text-yellow-700 border-yellow-200' :
-                                    c.stage === LegalStage.RAPO ? 'bg-blue-50 text-blue-700 border-blue-200' :
-                                    'bg-red-50 text-red-700 border-red-200'
-                                }`}>
-                                    {c.stage}
-                                </span>
-                            </div>
-                            {/* Prestations Tags Summary in Sidebar */}
-                            <div className="flex flex-wrap gap-1 mb-1">
-                                {c.prestations.slice(0, 2).map((p, idx) => (
-                                    <span key={idx} className={`text-[10px] px-1.5 py-0.5 rounded border ${p.isAccepted ? 'bg-gray-100 text-gray-600 border-gray-200' : 'bg-red-50 text-red-600 border-red-100'}`}>
-                                        {p.name}
-                                    </span>
-                                ))}
-                                {c.prestations.length > 2 && (
-                                    <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded border border-gray-200">
-                                        +{c.prestations.length - 2}
-                                    </span>
+                    {groupedCases.map((group) => {
+                        const isExpanded = expandedEmails.has(group.email);
+                        const hasSelectedCase = group.cases.some(c => c.id === selectedCaseId);
+                        
+                        return (
+                            <li key={group.email} className="border-b">
+                                {/* Email Header - Clickable to expand/collapse */}
+                                <div 
+                                    onClick={() => toggleEmailExpansion(group.email)}
+                                    className="p-3 bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors flex items-center justify-between border-b"
+                                >
+                                    <div className="flex items-center flex-1 min-w-0">
+                                        <i className={`fas fa-chevron-${isExpanded ? 'down' : 'right'} mr-2 text-gray-400 text-xs`}></i>
+                                        <i className="fas fa-envelope mr-2 text-brand-red"></i>
+                                        <span className="font-semibold text-sm text-gray-800 truncate">{group.email}</span>
+                                        <span className="ml-2 text-xs text-gray-500">({group.cases.length})</span>
+                                    </div>
+                                </div>
+                                
+                                {/* Cases under this email - shown when expanded */}
+                                {isExpanded && (
+                                    <ul className="bg-white">
+                                        {group.cases.map(c => (
+                                            <li 
+                                                key={c.id} 
+                                                onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setSelectedCaseId(c.id);
+                                                }}
+                                                className={`px-4 py-3 border-b cursor-pointer hover:bg-blue-50 transition-colors ${
+                                                    selectedCaseId === c.id ? 'bg-blue-50 border-l-4 border-l-brand-red' : ''
+                                                }`}
+                                            >
+                                                <div className="flex justify-between mb-1">
+                                                    <span className="font-bold text-gray-800 text-sm">{c.id}</span>
+                                                    <span className="text-xs text-gray-400">{c.submittedAt.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                                </div>
+                                                <div className="flex items-center justify-between mb-2">
+                                                    <span className="text-xs text-gray-500 truncate w-1/2">{c.phone}</span>
+                                                    <span className={`text-[10px] uppercase font-bold px-2 py-0.5 rounded border ${
+                                                        c.stage === LegalStage.CONTROL ? 'bg-yellow-50 text-yellow-700 border-yellow-200' :
+                                                        c.stage === LegalStage.RAPO ? 'bg-blue-50 text-blue-700 border-blue-200' :
+                                                        'bg-red-50 text-red-700 border-red-200'
+                                                    }`}>
+                                                        {c.stage}
+                                                    </span>
+                                                </div>
+                                                {/* Prestations Tags Summary in Sidebar */}
+                                                <div className="flex flex-wrap gap-1 mb-1">
+                                                    {c.prestations.slice(0, 2).map((p, idx) => (
+                                                        <span key={idx} className={`text-[10px] px-1.5 py-0.5 rounded border ${p.isAccepted ? 'bg-gray-100 text-gray-600 border-gray-200' : 'bg-red-50 text-red-600 border-red-100'}`}>
+                                                            {p.name}
+                                                        </span>
+                                                    ))}
+                                                    {c.prestations.length > 2 && (
+                                                        <span className="text-[10px] bg-gray-100 text-gray-600 px-1.5 py-0.5 rounded border border-gray-200">
+                                                            +{c.prestations.length - 2}
+                                                        </span>
+                                                    )}
+                                                </div>
+                                                <div className="text-xs text-gray-600 truncate">{c.description || "Aucune description"}</div>
+                                            </li>
+                                        ))}
+                                    </ul>
                                 )}
-                            </div>
-                            <div className="text-sm text-gray-600 truncate">{c.description || "Aucune description"}</div>
-                        </li>
-                    ))}
+                            </li>
+                        );
+                    })}
                 </ul>
             </div>
 

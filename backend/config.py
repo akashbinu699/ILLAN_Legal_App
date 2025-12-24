@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     
     # LLM
     local_llm_path: str = ""
+    gemini_api_key: str = ""
     openai_api_key: str = ""
     groq_api_key: str = ""
     
@@ -74,8 +75,16 @@ def log_config_status():
         try:
             with open(ENV_FILE, 'r') as f:
                 content = f.read()
+                has_gemini = 'GEMINI_API_KEY' in content
                 has_groq = 'GROQ_API_KEY' in content
+                print(f"GEMINI_API_KEY found in .env: {has_gemini}")
                 print(f"GROQ_API_KEY found in .env: {has_groq}")
+                if has_gemini:
+                    for line in content.split('\n'):
+                        if line.startswith('GEMINI_API_KEY='):
+                            key_length = len(line.split('=', 1)[1]) if '=' in line else 0
+                            print(f"  - GEMINI_API_KEY length: {key_length} characters")
+                            break
                 if has_groq:
                     # Show first few chars to verify it's there
                     for line in content.split('\n'):
@@ -87,14 +96,17 @@ def log_config_status():
             print(f"Error reading .env file: {e}")
     
     print(f"\nLoaded API Keys:")
+    print(f"  - GEMINI_API_KEY: {'SET' if settings.gemini_api_key else 'NOT SET'} ({len(settings.gemini_api_key)} chars)")
     print(f"  - GROQ_API_KEY: {'SET' if settings.groq_api_key else 'NOT SET'} ({len(settings.groq_api_key)} chars)")
     print(f"  - OPENAI_API_KEY: {'SET' if settings.openai_api_key else 'NOT SET'} ({len(settings.openai_api_key)} chars)")
     print(f"  - RERANKER_API_KEY: {'SET' if settings.reranker_api_key else 'NOT SET'}")
     print(f"  - COHERE_API_KEY: {'SET' if settings.cohere_api_key else 'NOT SET'}")
     
     # Also check environment variables directly
+    env_gemini = os.getenv('GEMINI_API_KEY', '')
     env_groq = os.getenv('GROQ_API_KEY', '')
     print(f"\nEnvironment Variables (direct):")
+    print(f"  - GEMINI_API_KEY: {'SET' if env_gemini else 'NOT SET'} ({len(env_gemini)} chars)")
     print(f"  - GROQ_API_KEY: {'SET' if env_groq else 'NOT SET'} ({len(env_groq)} chars)")
     print("=" * 60)
 

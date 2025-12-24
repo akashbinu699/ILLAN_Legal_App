@@ -11,7 +11,12 @@ from backend.api.schemas import (
     QueryResponse,
     CaseResponse,
     CaseUpdate,
-    QueryHistoryResponse
+    QueryHistoryResponse,
+    GenerateDraftRequest,
+    GenerateDraftResponse,
+    StageDetectionRequest,
+    StageDetectionResponse,
+    EmailGroupResponse
 )
 from backend.database.models import Submission, Query as QueryModel
 from datetime import datetime
@@ -25,18 +30,9 @@ async def submit_case(
 ):
     """Receive form submission from frontend."""
     try:
-        # Generate case ID
-        year = datetime.now().year
-        # Get count of existing cases for this year
-        from sqlalchemy import select, func
-        result = await db.execute(
-            select(func.count(Submission.id)).where(
-                Submission.case_id.like(f"CAS-{year}-%")
-            )
-        )
-        count = result.scalar() or 0
-        sequence = str(count + 1).zfill(3)
-        case_id = f"CAS-{year}-{sequence}"
+        # Generate case ID with timestamp format: CAS_DD-MM-YY_HH:MM:SS
+        now = datetime.now()
+        case_id = f"CAS_{now.strftime('%d-%m-%y_%H:%M:%S')}"
         
         # Create submission record
         db_submission = Submission(
@@ -55,6 +51,7 @@ async def submit_case(
         
         # Trigger document processing pipeline (async background task)
         # Create a new session for the background task since the request session will close
+        # This runs in the background and doesn't block the response
         from backend.services.processing_pipeline import processing_pipeline
         from backend.database.db import AsyncSessionLocal
         
@@ -67,10 +64,22 @@ async def submit_case(
                         bg_db
                     )
                 except Exception as e:
-                    print(f"Background processing error: {e}")
+                    print(f"Background processing error for submission {db_submission.id}: {e}")
                     import traceback
                     traceback.print_exc()
+                    # Update status to indicate processing failed
+                    try:
+                        result = await bg_db.execute(
+                            select(Submission).where(Submission.id == db_submission.id)
+                        )
+                        sub = result.scalar_one_or_none()
+                        if sub:
+                            sub.status = "NEW"  # Reset status on error
+                            await bg_db.commit()
+                    except Exception as update_error:
+                        print(f"Failed to update status after processing error: {update_error}")
         
+        # Fire and forget - don't await, let it run in background
         asyncio.create_task(process_in_background())
         
         return SubmissionResponse.model_validate(db_submission)
@@ -80,15 +89,16 @@ async def submit_case(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error processing submission: {str(e)}")
 
-@router.get("/cases", response_model=List[CaseResponse])
+@router.get("/cases", response_model=List[EmailGroupResponse])
 async def get_cases(
     skip: int = 0,
     limit: int = 100,
     db: AsyncSession = Depends(get_db)
 ):
-    """Retrieve all cases for lawyer dashboard."""
+    """Retrieve all cases grouped by email address for lawyer dashboard."""
     from sqlalchemy import select
     from sqlalchemy.orm import selectinload
+    from collections import defaultdict
     
     result = await db.execute(
         select(Submission)
@@ -99,8 +109,8 @@ async def get_cases(
     )
     submissions = result.scalars().all()
     
-    # Convert to response format
-    cases = []
+    # Group submissions by email
+    email_groups = defaultdict(list)
     for sub in submissions:
         case = CaseResponse(
             id=sub.id,
@@ -117,9 +127,24 @@ async def get_cases(
             emailPrompt=sub.email_prompt,
             appealPrompt=sub.appeal_prompt
         )
-        cases.append(case)
+        email_groups[sub.email].append(case)
     
-    return cases
+    # Convert to response format - cases within each group are already ordered by submitted_at DESC
+    # Sort email groups by most recent case submission time
+    email_group_list = []
+    for email, cases in email_groups.items():
+        # Cases are already in descending order (newest first) from the query
+        # But we'll ensure they're sorted by submitted_at DESC within the group
+        cases_sorted = sorted(cases, key=lambda c: c.submitted_at, reverse=True)
+        email_group_list.append(EmailGroupResponse(
+            email=email,
+            cases=cases_sorted
+        ))
+    
+    # Sort email groups by the most recent case submission time (newest first)
+    email_group_list.sort(key=lambda g: g.cases[0].submitted_at if g.cases else datetime.min, reverse=True)
+    
+    return email_group_list
 
 @router.get("/case/{case_id}", response_model=CaseResponse)
 async def get_case(
@@ -430,6 +455,145 @@ Generate a professional appeal draft that can be used for legal proceedings."""
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error generating drafts: {str(e)}")
+
+@router.post("/case/{case_id}/generate-draft", response_model=GenerateDraftResponse)
+async def generate_single_draft(
+    case_id: str,
+    request: GenerateDraftRequest,
+    db: AsyncSession = Depends(get_db)
+):
+    """Generate a single draft (email or appeal) with a custom prompt."""
+    try:
+        from sqlalchemy import select
+        from backend.services.llm_service import llm_service
+        
+        result = await db.execute(
+            select(Submission).where(Submission.case_id == case_id)
+        )
+        submission = result.scalar_one_or_none()
+        
+        if not submission:
+            raise HTTPException(status_code=404, detail="Case not found")
+        
+        # Generate draft using the provided prompt
+        try:
+            draft = await llm_service.generate(request.prompt)
+            
+            # Update the submission with the generated draft and prompt
+            if request.draft_type == 'email':
+                submission.generated_email_draft = draft
+                submission.email_prompt = request.prompt
+            elif request.draft_type == 'appeal':
+                submission.generated_appeal_draft = draft
+                submission.appeal_prompt = request.prompt
+            
+            await db.commit()
+            
+            return GenerateDraftResponse(
+                draft=draft,
+                prompt=request.prompt
+            )
+        except Exception as e:
+            print(f"Error generating draft: {e}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Error generating draft: {str(e)}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in generate_single_draft: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error generating draft: {str(e)}")
+
+@router.post("/detect-stage", response_model=StageDetectionResponse)
+async def detect_stage(
+    request: StageDetectionRequest
+):
+    """Detect legal stage and prestations from case description and files."""
+    try:
+        from backend.services.llm_service import llm_service
+        import json
+        
+        # Knowledge base (simplified - in production, load from file)
+        KNOWLEDGE_BASE = """THEME,RENSEIGNEMENTS
+"Recours dont traite le cabinet (✅), et recours dont il ne traite pas (❌) (Généralités)","Notre cabinet pratique en droit public et ne connait que des recours et contentieux administratifs. Nous ne traitons pas des affaires qui relèvent du tribunal judiciaire. Par ailleurs, nous ne traitons pas non plus des prestations relatives au handicap, ou celles ne relevant pas du tribunal administratif (AAH, AEEH, AJPP, AJPA, AVPF, etc.)."
+"Aides personnelles au logement (APLs) et Prime de déménagement ✅","Pour contester la décision de la caisse d'Allocations familiales (Caf) : Recours amiable puis contentieux devant tribunal administratif."
+"Revenu de solidarité active (RSA) ✅","Pour contester la décision : Recours amiable puis contentieux devant tribunal administratif."
+"Prime d'activité ✅","Pour contester la décision : Recours amiable puis contentieux devant tribunal administratif."
+"""
+        
+        # Build prompt for stage detection
+        prompt = f"""CONTEXTE:
+Tu es avocat spécialisé en droit administratif (CAF). 
+Tu rédiges pour le compte de Maître Ilan BRUN-VARGAS.
+
+BASE DE CONNAISSANCES DU CABINET (Ce que nous traitons ou non):
+{KNOWLEDGE_BASE}
+
+DESCRIPTION DU CAS PAR LE CLIENT:
+"{request.description}"
+
+TÂCHE:
+Analysez la description pour :
+1. Identifier l'étape précise de la procédure (stage).
+2. Identifier TOUTES les prestations concernées (RSA, APL, AAH, etc.). Il peut y en avoir plusieurs.
+3. Pour chaque prestation, déterminer si le cabinet traite ce type de recours selon la Base de Connaissances (isAccepted).
+
+RÈGLES DE CLASSIFICATION (STAGE):
+1. CONTROL : Lettre de fin de contrôle, Procédure contradictoire, invitation à observations. Pas d'indu formel.
+2. RAPO : Notification d'indu, révision de droits, délai de 2 mois ouvert pour CRA/Président CD.
+3. LITIGATION : RAPO rejeté (explicite ou implicite), saisine Tribunal Administratif.
+
+RÈGLES D'ACCEPTATION (isAccepted):
+- Regardez la colonne "Recours dont traite le cabinet" dans la Base de Connaissances.
+- ✅ = Accepté (RSA, Prime d'activité, APL, etc.).
+- ❌ = Refusé (Handicap, AAH, AEEH, Tribunal Judiciaire, etc.).
+
+Retournez uniquement le JSON suivant :
+{{ 
+  "stage": "CONTROL" | "RAPO" | "LITIGATION",
+  "prestations": [
+    {{ "name": "Nom de la prestation", "isAccepted": true | false }}
+  ]
+}}"""
+        
+        # Generate response using LLM (Gemini 3 → OpenAI → Groq)
+        response_text = await llm_service.generate(prompt, max_tokens=1000, temperature=0.3)
+        
+        # Parse JSON response
+        try:
+            # Extract JSON from response (might have markdown code blocks)
+            import re
+            json_match = re.search(r'\{[^{}]*"stage"[^{}]*\}', response_text, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(0)
+            else:
+                json_str = response_text
+            
+            result = json.loads(json_str)
+            
+            return StageDetectionResponse(
+                stage=result.get("stage", "RAPO"),
+                prestations=[
+                    {"name": p.get("name", "Non identifiée"), "isAccepted": p.get("isAccepted", True)}
+                    for p in result.get("prestations", [])
+                ]
+            )
+        except json.JSONDecodeError as e:
+            print(f"Error parsing JSON response: {e}")
+            print(f"Response was: {response_text}")
+            # Return default
+            return StageDetectionResponse(
+                stage="RAPO",
+                prestations=[{"name": "Non identifiée", "isAccepted": True}]
+            )
+            
+    except Exception as e:
+        print(f"Error in detect_stage: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error detecting stage: {str(e)}")
 
 @router.get("/case/{case_id}/queries", response_model=List[QueryHistoryResponse])
 async def get_case_queries(

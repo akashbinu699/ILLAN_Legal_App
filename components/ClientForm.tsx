@@ -56,21 +56,62 @@ export const ClientForm: React.FC<ClientFormProps> = ({ onSubmit }) => {
         }));
     };
 
+    const validateEmail = (email: string): boolean => {
+        // Basic email validation regex - more lenient
+        // Allows: user@domain.com, user.name@domain.co.uk, etc.
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        const trimmedEmail = email.trim();
+        if (!trimmedEmail) return false;
+        return emailRegex.test(trimmedEmail);
+    };
+
     const validate = () => {
         const newErrors: FormErrors = {};
-        if (!formData.email) newErrors.email = "L'email est requis";
-        if (!formData.phone) newErrors.phone = "Le téléphone est requis";
+        const trimmedEmail = formData.email.trim();
+        
+        if (!trimmedEmail) {
+            newErrors.email = "L'email est requis";
+        } else if (!validateEmail(trimmedEmail)) {
+            newErrors.email = "Veuillez entrer une adresse email valide (ex: nom@exemple.com)";
+        }
+        if (!formData.phone.trim()) newErrors.phone = "Le téléphone est requis";
         if (formData.files.length === 0) newErrors.file = "Au moins un document de la CAF est requis";
         
         setErrors(newErrors);
-        return Object.keys(newErrors).length === 0 && agreedType && agreedPrivacy;
+        const isValid = Object.keys(newErrors).length === 0 && agreedType && agreedPrivacy;
+        
+        // Show alert if validation fails with specific reason
+        if (!isValid) {
+            if (!agreedType) {
+                alert("Please confirm that your request concerns RSA, Activity Bonus, or Housing Assistance.");
+            } else if (!agreedPrivacy) {
+                alert("Please accept the privacy policy.");
+            } else if (Object.keys(newErrors).length > 0) {
+                const errorMessages = Object.values(newErrors).filter(Boolean).join('\n');
+                alert(`Please correct the following errors:\n${errorMessages}`);
+            }
+        }
+        
+        return isValid;
     };
 
     const handleSubmit = async () => {
-        if (!validate()) return;
+        console.log("Submit button clicked");
+        console.log("Form data:", formData);
+        console.log("Agreed type:", agreedType, "Agreed privacy:", agreedPrivacy);
+        
+        const isValid = validate();
+        console.log("Validation result:", isValid);
+        console.log("Errors:", errors);
+        
+        if (!isValid) {
+            console.log("Validation failed, not submitting");
+            return;
+        }
         
         setIsSubmitting(true);
         try {
+            console.log("Processing files...");
             // Process all files
             const processedFiles: AttachedFile[] = [];
             for (const file of formData.files) {
@@ -82,16 +123,25 @@ export const ClientForm: React.FC<ClientFormProps> = ({ onSubmit }) => {
                 });
             }
 
+            console.log("Calling onSubmit with:", {
+                email: formData.email,
+                phone: formData.phone,
+                description: formData.description,
+                filesCount: processedFiles.length
+            });
+
             await onSubmit({
                 email: formData.email,
                 phone: formData.phone,
                 description: formData.description,
                 files: processedFiles
             });
+            console.log("Submission successful");
             // Reset form could go here, but usually we redirect to a thank you page
         } catch (e) {
-            console.error(e);
-            alert("Une erreur est survenue lors de l'envoi.");
+            console.error("Submission error:", e);
+            const errorMessage = e instanceof Error ? e.message : "Une erreur est survenue lors de l'envoi.";
+            alert(`Erreur: ${errorMessage}`);
         } finally {
             setIsSubmitting(false);
         }
@@ -106,6 +156,7 @@ export const ClientForm: React.FC<ClientFormProps> = ({ onSubmit }) => {
                     <FormInput 
                         label="Email" 
                         name="email" 
+                        type="email"
                         required 
                         value={formData.email} 
                         onChange={handleInputChange} 

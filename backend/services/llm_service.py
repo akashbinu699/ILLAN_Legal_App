@@ -8,8 +8,9 @@ from backend.config import settings
 # Debug: Log settings on import
 def _log_llm_settings():
     """Log LLM settings when module is imported."""
-    print(f"[LLM Service Import] GROQ_API_KEY: {'SET' if settings.groq_api_key else 'NOT SET'} (length: {len(settings.groq_api_key)})")
+    print(f"[LLM Service Import] GEMINI_API_KEY: {'SET' if settings.gemini_api_key else 'NOT SET'} (length: {len(settings.gemini_api_key)})")
     print(f"[LLM Service Import] OPENAI_API_KEY: {'SET' if settings.openai_api_key else 'NOT SET'} (length: {len(settings.openai_api_key)})")
+    print(f"[LLM Service Import] GROQ_API_KEY: {'SET' if settings.groq_api_key else 'NOT SET'} (length: {len(settings.groq_api_key)})")
 
 _log_llm_settings()
 
@@ -52,26 +53,126 @@ class LLMService:
         # This is a placeholder
         raise NotImplementedError("Local LLM not yet implemented. Use cloud fallback.")
     
+    def _generate_gemini(self, prompt: str, max_tokens: int, temperature: float) -> str:
+        """Generate using Google Gemini 3 API."""
+        try:
+            import google.generativeai as genai
+            
+            # Configure Gemini
+            genai.configure(api_key=settings.gemini_api_key)
+            
+            # Use Gemini 2.0 Flash (or fallback to 1.5 Pro if 2.0 not available)
+            model_name = "gemini-2.0-flash-exp"
+            try:
+                model = genai.GenerativeModel(model_name)
+            except Exception:
+                # Fallback to 1.5 Pro if 2.0 not available
+                model_name = "gemini-1.5-pro"
+                model = genai.GenerativeModel(model_name)
+            
+            print(f"[LLM Service] Using Gemini model: {model_name}")
+            
+            # Generate content
+            # Gemini uses system instruction in generation_config
+            generation_config = {
+                "temperature": temperature,
+                "max_output_tokens": max_tokens,
+            }
+            
+            # Combine system and user prompt
+            full_prompt = f"""You are a legal assistant helping with French administrative law cases.
+
+{prompt}"""
+            
+            response = model.generate_content(
+                full_prompt,
+                generation_config=generation_config
+            )
+            
+            print(f"[LLM Service] Gemini API call successful!")
+            return response.text
+            
+        except Exception as e:
+            error_type = type(e).__name__
+            error_msg = str(e)
+            print(f"[LLM Service] Error generating with Gemini: {error_type}: {error_msg}")
+            import traceback
+            traceback.print_exc()
+            raise  # Re-raise to trigger fallback
+    
     def _generate_cloud(self, prompt: str, max_tokens: int, temperature: float) -> str:
-        """Generate using cloud LLM (Groq preferred, OpenAI as fallback)."""
+        """Generate using cloud LLM with fallback chain: Gemini 3 → OpenAI → Groq."""
         import os
         
         # Debug logging
         print(f"\n[LLM Service] Attempting to generate with cloud LLM...")
-        print(f"[LLM Service] GROQ_API_KEY from settings: {'SET' if settings.groq_api_key else 'NOT SET'} (length: {len(settings.groq_api_key)})")
+        print(f"[LLM Service] GEMINI_API_KEY from settings: {'SET' if settings.gemini_api_key else 'NOT SET'} (length: {len(settings.gemini_api_key)})")
         print(f"[LLM Service] OPENAI_API_KEY from settings: {'SET' if settings.openai_api_key else 'NOT SET'} (length: {len(settings.openai_api_key)})")
+        print(f"[LLM Service] GROQ_API_KEY from settings: {'SET' if settings.groq_api_key else 'NOT SET'} (length: {len(settings.groq_api_key)})")
         
         # Also check environment variables directly
-        env_groq = os.getenv('GROQ_API_KEY', '')
+        env_gemini = os.getenv('GEMINI_API_KEY', '')
         env_openai = os.getenv('OPENAI_API_KEY', '')
-        print(f"[LLM Service] GROQ_API_KEY from env: {'SET' if env_groq else 'NOT SET'} (length: {len(env_groq)})")
+        env_groq = os.getenv('GROQ_API_KEY', '')
+        print(f"[LLM Service] GEMINI_API_KEY from env: {'SET' if env_gemini else 'NOT SET'} (length: {len(env_gemini)})")
         print(f"[LLM Service] OPENAI_API_KEY from env: {'SET' if env_openai else 'NOT SET'} (length: {len(env_openai)})")
+        print(f"[LLM Service] GROQ_API_KEY from env: {'SET' if env_groq else 'NOT SET'} (length: {len(env_groq)})")
         
         # Try to use environment variable if settings doesn't have it
-        groq_key = settings.groq_api_key or env_groq
+        gemini_key = settings.gemini_api_key or env_gemini
         openai_key = settings.openai_api_key or env_openai
+        groq_key = settings.groq_api_key or env_groq
         
-        # Try Groq first if available
+        # 1. Try Gemini 3 first (primary LLM)
+        if gemini_key:
+            print(f"[LLM Service] Attempting Gemini 3 API call...")
+            try:
+                return self._generate_gemini(prompt, max_tokens, temperature)
+            except Exception as e:
+                error_type = type(e).__name__
+                error_msg = str(e)
+                print(f"[LLM Service] Gemini failed: {error_type}: {error_msg}")
+                
+                # Check if it's a rate limit error
+                if "rate_limit" in error_msg.lower() or "429" in error_msg or "quota" in error_msg.lower():
+                    print(f"[LLM Service] Gemini rate limit/quota hit. Falling back to OpenAI...")
+                else:
+                    print(f"[LLM Service] Gemini error. Falling back to OpenAI...")
+        
+        # 2. Fallback to OpenAI
+        if openai_key:
+            print(f"[LLM Service] Attempting OpenAI API call...")
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=openai_key)
+                
+                print(f"[LLM Service] OpenAI client created, making API call...")
+                response = client.chat.completions.create(
+                    model="gpt-4-turbo-preview",
+                    messages=[
+                        {"role": "system", "content": "You are a legal assistant helping with French administrative law cases."},
+                        {"role": "user", "content": prompt}
+                    ],
+                    max_tokens=max_tokens,
+                    temperature=temperature
+                )
+                
+                print(f"[LLM Service] OpenAI API call successful!")
+                return response.choices[0].message.content
+            except Exception as e:
+                error_type = type(e).__name__
+                error_msg = str(e)
+                print(f"[LLM Service] Error generating with OpenAI: {error_type}: {error_msg}")
+                import traceback
+                traceback.print_exc()
+                
+                # Check if it's a rate limit error
+                if "rate_limit" in error_msg.lower() or "429" in error_msg:
+                    print(f"[LLM Service] OpenAI rate limit hit. Falling back to Groq...")
+                else:
+                    print(f"[LLM Service] OpenAI error. Falling back to Groq...")
+        
+        # 3. Fallback to Groq
         if groq_key:
             print(f"[LLM Service] Attempting Groq API call...")
             try:
@@ -101,46 +202,24 @@ class LLMService:
                 print(f"[LLM Service] Error generating with Groq: {error_type}: {error_msg}")
                 import traceback
                 traceback.print_exc()
-                
-                # Check if it's a rate limit error
-                if "rate_limit" in error_msg.lower() or "429" in error_msg:
-                    print(f"[LLM Service] Groq rate limit hit. Falling back to OpenAI...")
-                else:
-                    print(f"[LLM Service] Groq error. Falling back to OpenAI...")
         
-        # Fallback to OpenAI
-        if openai_key:
-            print(f"[LLM Service] Attempting OpenAI API call...")
-            try:
-                from openai import OpenAI
-                client = OpenAI(api_key=openai_key)
-                
-                print(f"[LLM Service] OpenAI client created, making API call...")
-                response = client.chat.completions.create(
-                    model="gpt-4-turbo-preview",
-                    messages=[
-                        {"role": "system", "content": "You are a legal assistant helping with French administrative law cases."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=max_tokens,
-                    temperature=temperature
-                )
-                
-                print(f"[LLM Service] OpenAI API call successful!")
-                return response.choices[0].message.content
-            except Exception as e:
-                print(f"[LLM Service] Error generating with OpenAI: {type(e).__name__}: {str(e)}")
-                import traceback
-                traceback.print_exc()
-                return f"Error: {str(e)}"
-        
-        # Check if we had a Groq key but it failed (e.g., rate limit)
-        if groq_key and not openai_key:
-            error_msg = "Error: GROQ_API_KEY is configured but hit rate limit, and no OPENAI_API_KEY is available as fallback. Please wait for rate limit to reset or configure OPENAI_API_KEY in .env file."
-        elif not groq_key and not openai_key:
-            error_msg = "Error: No LLM API key configured (neither GROQ_API_KEY nor OPENAI_API_KEY found in settings or environment)"
+        # All LLMs failed - return error message
+        if gemini_key and openai_key and groq_key:
+            error_msg = "Error: All LLM providers (Gemini 3, OpenAI, Groq) failed. Please check API keys and quotas."
+        elif gemini_key and openai_key:
+            error_msg = "Error: Both Gemini 3 and OpenAI failed. Groq API key not configured."
+        elif gemini_key and groq_key:
+            error_msg = "Error: Both Gemini 3 and Groq failed. OpenAI API key not configured."
+        elif openai_key and groq_key:
+            error_msg = "Error: Both OpenAI and Groq failed. Gemini 3 API key not configured."
+        elif gemini_key:
+            error_msg = "Error: Gemini 3 failed. No fallback API keys (OpenAI or Groq) configured."
+        elif openai_key:
+            error_msg = "Error: OpenAI failed. No fallback API keys (Gemini 3 or Groq) configured."
+        elif groq_key:
+            error_msg = "Error: Groq failed. No fallback API keys (Gemini 3 or OpenAI) configured."
         else:
-            error_msg = "Error: Unable to generate response. Both Groq and OpenAI API calls failed."
+            error_msg = "Error: No LLM API key configured. Please set GEMINI_API_KEY, OPENAI_API_KEY, or GROQ_API_KEY in .env file."
         
         print(f"[LLM Service] {error_msg}")
         return error_msg

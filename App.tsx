@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ClientForm } from './components/ClientForm';
 import { LawyerDashboard } from './components/LawyerDashboard';
 import { ClientSubmission, CaseStatus, LegalStage } from './types';
-import { detectCaseStage, getPromptTemplates, generateSingleDraft } from './services/geminiService';
+// Removed direct Gemini imports - all LLM calls now go through backend
 import { apiClient } from './services/apiClient';
 
 enum View {
@@ -14,35 +14,48 @@ enum View {
 export default function App() {
     const [currentView, setCurrentView] = useState<View>(View.CLIENT);
     const [cases, setCases] = useState<ClientSubmission[]>([]);
-    const [useBackend, setUseBackend] = useState<boolean>(true); // Toggle for backend vs direct Gemini
+    const [emailGroups, setEmailGroups] = useState<Array<{ email: string; cases: ClientSubmission[] }>>([]);
     
     // Load cases from backend on mount
     useEffect(() => {
-        if (useBackend) {
-            loadCasesFromBackend();
-        }
-    }, [useBackend]);
+        loadCasesFromBackend();
+    }, []);
     
     const loadCasesFromBackend = async () => {
         try {
-            const apiCases = await apiClient.getCases();
-            // Convert API cases to ClientSubmission format
-            const convertedCases: ClientSubmission[] = apiCases.map(apiCase => ({
-                id: apiCase.case_id,
-                email: apiCase.email,
-                phone: apiCase.phone,
-                description: apiCase.description,
-                files: [], // Files not included in API response
-                submittedAt: new Date(apiCase.submitted_at),
-                status: apiCase.status as CaseStatus,
-                stage: apiCase.stage as LegalStage,
-                prestations: apiCase.prestations || [],
-                generatedEmailDraft: apiCase.generatedEmailDraft,
-                generatedAppealDraft: apiCase.generatedAppealDraft,
-                emailPrompt: apiCase.emailPrompt,
-                appealPrompt: apiCase.appealPrompt
-            }));
-            setCases(convertedCases);
+            const apiEmailGroups = await apiClient.getCases();
+            // Convert grouped API response to grouped ClientSubmission format
+            const convertedGroups: Array<{ email: string; cases: ClientSubmission[] }> = [];
+            const allCases: ClientSubmission[] = [];
+            
+            for (const group of apiEmailGroups) {
+                const groupCases: ClientSubmission[] = [];
+                for (const apiCase of group.cases) {
+                    const convertedCase: ClientSubmission = {
+                        id: apiCase.case_id,
+                        email: apiCase.email,
+                        phone: apiCase.phone,
+                        description: apiCase.description,
+                        files: [], // Files not included in API response
+                        submittedAt: new Date(apiCase.submitted_at),
+                        status: apiCase.status as CaseStatus,
+                        stage: apiCase.stage as LegalStage,
+                        prestations: apiCase.prestations || [],
+                        generatedEmailDraft: apiCase.generatedEmailDraft,
+                        generatedAppealDraft: apiCase.generatedAppealDraft,
+                        emailPrompt: apiCase.emailPrompt,
+                        appealPrompt: apiCase.appealPrompt
+                    };
+                    groupCases.push(convertedCase);
+                    allCases.push(convertedCase);
+                }
+                convertedGroups.push({
+                    email: group.email,
+                    cases: groupCases
+                });
+            }
+            setEmailGroups(convertedGroups);
+            setCases(allCases); // Keep flat list for backward compatibility
         } catch (error) {
             console.error("Failed to load cases from backend:", error);
             // Fallback to empty array
@@ -57,96 +70,53 @@ export default function App() {
     };
 
     const handleClientSubmit = async (data: Omit<ClientSubmission, 'id' | 'status' | 'submittedAt' | 'stage' | 'prestations' | 'generatedEmailDraft' | 'generatedAppealDraft'>) => {
-        if (useBackend) {
-            // Use backend API
-            try {
-                const response = await apiClient.submitCase({
-                    email: data.email,
-                    phone: data.phone,
-                    description: data.description,
-                    files: data.files.map(f => ({
-                        name: f.name,
-                        mimeType: f.mimeType,
-                        base64: f.base64
-                    }))
-                });
-                
-                // Convert to ClientSubmission format
-                const newCase: ClientSubmission = {
-                    id: response.case_id,
-                    email: response.email,
-                    phone: response.phone,
-                    description: response.description,
-                    files: data.files,
-                    submittedAt: new Date(response.submitted_at),
-                    status: response.status as CaseStatus,
-                    stage: response.stage as LegalStage,
-                    prestations: response.prestations || [],
-                    generatedEmailDraft: response.generatedEmailDraft,
-                    generatedAppealDraft: response.generatedAppealDraft,
-                    emailPrompt: response.emailPrompt,
-                    appealPrompt: response.appealPrompt
-                };
-                
-                setCases(prev => [newCase, ...prev]);
-                setCurrentView(View.SUCCESS);
-                
-                // Reload cases after a delay to get updated status
-                setTimeout(() => loadCasesFromBackend(), 2000);
-            } catch (error) {
-                console.error("Backend submission failed:", error);
-                const errorMessage = error instanceof Error ? error.message : "Erreur inconnue";
-                alert(`Erreur lors de l'envoi: ${errorMessage}\n\nVérifiez que le backend est démarré sur http://localhost:8000`);
-            }
-        } else {
-            // Original direct Gemini API flow
-            const newId = generateCaseId(cases.length);
+        // Always use backend API
+        try {
+            const response = await apiClient.submitCase({
+                email: data.email,
+                phone: data.phone,
+                description: data.description,
+                files: data.files.map(f => ({
+                    name: f.name,
+                    mimeType: f.mimeType,
+                    base64: f.base64
+                }))
+            });
             
+            // Convert to ClientSubmission format
             const newCase: ClientSubmission = {
-                id: newId,
-                submittedAt: new Date(),
-                status: CaseStatus.NEW,
-                stage: LegalStage.RAPO,
-                prestations: [],
-                ...data
+                id: response.case_id,
+                email: response.email,
+                phone: response.phone,
+                description: response.description,
+                files: data.files,
+                submittedAt: new Date(response.submitted_at),
+                status: response.status as CaseStatus,
+                stage: response.stage as LegalStage,
+                prestations: response.prestations || [],
+                generatedEmailDraft: response.generatedEmailDraft,
+                generatedAppealDraft: response.generatedAppealDraft,
+                emailPrompt: response.emailPrompt,
+                appealPrompt: response.appealPrompt
             };
-
+            
             setCases(prev => [newCase, ...prev]);
             setCurrentView(View.SUCCESS);
-
-            try {
-                const analysisResult = await detectCaseStage(newCase.description, newCase.files);
-                
-                setCases(prev => prev.map(c => c.id === newCase.id ? { 
-                    ...c, 
-                    stage: analysisResult.stage,
-                    prestations: analysisResult.prestations
-                } : c));
-
-                const { emailPrompt, appealPrompt } = getPromptTemplates(analysisResult.stage, "Client", newCase.description);
-                
-                setCases(prev => prev.map(c => c.id === newCase.id ? { ...c, emailPrompt, appealPrompt } : c));
-
-                const [emailDraft, appealDraft] = await Promise.all([
-                    generateSingleDraft(emailPrompt, newCase.files),
-                    generateSingleDraft(appealPrompt, newCase.files)
-                ]);
-
-                setCases(prev => prev.map(c => {
-                    if (c.id === newCase.id) {
-                        return {
-                            ...c,
-                            generatedEmailDraft: emailDraft,
-                            generatedAppealDraft: appealDraft,
-                            status: CaseStatus.PROCESSING
-                        };
-                    }
-                    return c;
-                }));
-
-            } catch (error) {
-                console.error("AI Pipeline failed", error);
+            
+            // Reload cases after a delay to get updated status
+            setTimeout(() => loadCasesFromBackend(), 2000);
+        } catch (error) {
+            console.error("Backend submission failed:", error);
+            let errorMessage = "Erreur inconnue";
+            if (error instanceof Error) {
+                errorMessage = error.message;
+            } else if (typeof error === 'string') {
+                errorMessage = error;
+            } else if (error && typeof error === 'object') {
+                // Try to extract meaningful error message from object
+                errorMessage = (error as any).message || (error as any).detail || JSON.stringify(error);
             }
+            alert(`Erreur lors de l'envoi: ${errorMessage}\n\nVérifiez que le backend est démarré sur http://localhost:8000`);
         }
     };
 
@@ -154,39 +124,37 @@ export default function App() {
         // Update local state immediately for responsive UI
         setCases(prev => prev.map(c => c.id === id ? { ...c, ...updates } : c));
         
-        // Persist to backend if using backend
-        if (useBackend) {
-            try {
-                // Map ClientSubmission fields to API update format
-                const apiUpdate: any = {};
-                if (updates.generatedEmailDraft !== undefined) {
-                    apiUpdate.generatedEmailDraft = updates.generatedEmailDraft;
-                }
-                if (updates.generatedAppealDraft !== undefined) {
-                    apiUpdate.generatedAppealDraft = updates.generatedAppealDraft;
-                }
-                if (updates.emailPrompt !== undefined) {
-                    apiUpdate.emailPrompt = updates.emailPrompt;
-                }
-                if (updates.appealPrompt !== undefined) {
-                    apiUpdate.appealPrompt = updates.appealPrompt;
-                }
-                if (updates.stage !== undefined) {
-                    apiUpdate.stage = updates.stage;
-                }
-                if (updates.status !== undefined) {
-                    apiUpdate.status = updates.status;
-                }
-                
-                // Only make API call if there are fields to update
-                if (Object.keys(apiUpdate).length > 0) {
-                    await apiClient.updateCase(id, apiUpdate);
-                }
-            } catch (error) {
-                console.error("Failed to update case in backend:", error);
-                // Don't show error to user - local state is already updated
-                // The error will be visible on next page load
+        // Always persist to backend
+        try {
+            // Map ClientSubmission fields to API update format
+            const apiUpdate: any = {};
+            if (updates.generatedEmailDraft !== undefined) {
+                apiUpdate.generatedEmailDraft = updates.generatedEmailDraft;
             }
+            if (updates.generatedAppealDraft !== undefined) {
+                apiUpdate.generatedAppealDraft = updates.generatedAppealDraft;
+            }
+            if (updates.emailPrompt !== undefined) {
+                apiUpdate.emailPrompt = updates.emailPrompt;
+            }
+            if (updates.appealPrompt !== undefined) {
+                apiUpdate.appealPrompt = updates.appealPrompt;
+            }
+            if (updates.stage !== undefined) {
+                apiUpdate.stage = updates.stage;
+            }
+            if (updates.status !== undefined) {
+                apiUpdate.status = updates.status;
+            }
+            
+            // Only make API call if there are fields to update
+            if (Object.keys(apiUpdate).length > 0) {
+                await apiClient.updateCase(id, apiUpdate);
+            }
+        } catch (error) {
+            console.error("Failed to update case in backend:", error);
+            // Don't show error to user - local state is already updated
+            // The error will be visible on next page load
         }
     };
 
@@ -199,7 +167,9 @@ export default function App() {
         handleUpdateCase(id, { [promptKey]: customPrompt });
 
         try {
-            const content = await generateSingleDraft(customPrompt, currentCase.files);
+            // Always use backend API to generate draft
+            const result = await apiClient.generateDraft(id, customPrompt, type);
+            const content = result.draft;
             
             if (type === 'email') {
                 handleUpdateCase(id, { generatedEmailDraft: content });
@@ -208,7 +178,8 @@ export default function App() {
             }
         } catch (error) {
             console.error("Regeneration failed", error);
-            alert("Erreur lors de la régénération.");
+            const errorMessage = error instanceof Error ? error.message : "Erreur inconnue";
+            alert(`Erreur lors de la régénération: ${errorMessage}`);
         }
     };
 
@@ -216,29 +187,32 @@ export default function App() {
         const currentCase = cases.find(c => c.id === id);
         if (!currentCase) return;
 
-        // 1. Get New Prompts for this stage
-        const { emailPrompt, appealPrompt } = getPromptTemplates(newStage, "Client", currentCase.description);
-
-        // 2. Update Stage AND Prompts AND Clear Drafts immediately
-        // This visual clear ensures the user sees something is happening
+        // 1. Update Stage immediately
         handleUpdateCase(id, { 
             stage: newStage,
-            emailPrompt, 
-            appealPrompt,
             generatedEmailDraft: "♻️ Changement de phase... Régénération de l'email...",
             generatedAppealDraft: "♻️ Changement de phase... Régénération du recours..."
         });
 
-        // 3. Regenerate drafts with new prompts
+        // 2. Regenerate drafts using backend API
         try {
-            const [emailDraft, appealDraft] = await Promise.all([
-                generateSingleDraft(emailPrompt, currentCase.files),
-                generateSingleDraft(appealPrompt, currentCase.files)
-            ]);
+            // Generate email draft
+            const emailResult = await apiClient.generateDraft(id, 
+                `Generate a professional email draft for a legal case at stage ${newStage}. Case description: ${currentCase.description}`,
+                'email'
+            );
+            
+            // Generate appeal draft
+            const appealResult = await apiClient.generateDraft(id,
+                `Generate a professional appeal draft for a legal case at stage ${newStage}. Case description: ${currentCase.description}`,
+                'appeal'
+            );
 
             handleUpdateCase(id, { 
-                generatedEmailDraft: emailDraft, 
-                generatedAppealDraft: appealDraft 
+                generatedEmailDraft: emailResult.draft,
+                generatedAppealDraft: appealResult.draft,
+                emailPrompt: emailResult.prompt,
+                appealPrompt: appealResult.prompt
             });
         } catch (e) {
             console.error("Failed to regenerate after stage change", e);
@@ -305,7 +279,8 @@ export default function App() {
 
                 {currentView === View.LAWYER && (
                     <LawyerDashboard 
-                        cases={cases} 
+                        cases={cases}
+                        emailGroups={emailGroups}
                         onUpdateCase={handleUpdateCase}
                         onRegenerateDraft={handleRegenerateDraft}
                         onStageChange={handleStageChange}

@@ -92,3 +92,27 @@ class QueryHistoryResponse(BaseModel):
     class Config:
         from_attributes = True
 
+class GenerateDraftRequest(BaseModel):
+    prompt: str
+    draft_type: str  # 'email' or 'appeal'
+
+class GenerateDraftResponse(BaseModel):
+    draft: str
+    prompt: str
+
+class StageDetectionRequest(BaseModel):
+    description: str
+    files: List[AttachedFileSchema] = []
+
+class PrestationSchema(BaseModel):
+    name: str
+    isAccepted: bool
+
+class StageDetectionResponse(BaseModel):
+    stage: str
+    prestations: List[PrestationSchema]
+
+class EmailGroupResponse(BaseModel):
+    email: str
+    cases: List[CaseResponse]
+
