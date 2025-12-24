@@ -22,45 +22,61 @@ async def submit_case(
     db: AsyncSession = Depends(get_db)
 ):
     """Receive form submission from frontend."""
-    # Generate case ID
-    year = datetime.now().year
-    # Get count of existing cases for this year
-    from sqlalchemy import select, func
-    result = await db.execute(
-        select(func.count(Submission.id)).where(
-            Submission.case_id.like(f"CAS-{year}-%")
+    try:
+        # Generate case ID
+        year = datetime.now().year
+        # Get count of existing cases for this year
+        from sqlalchemy import select, func
+        result = await db.execute(
+            select(func.count(Submission.id)).where(
+                Submission.case_id.like(f"CAS-{year}-%")
+            )
         )
-    )
-    count = result.scalar() or 0
-    sequence = str(count + 1).zfill(3)
-    case_id = f"CAS-{year}-{sequence}"
-    
-    # Create submission record
-    db_submission = Submission(
-        case_id=case_id,
-        email=submission.email,
-        phone=submission.phone,
-        description=submission.description,
-        submitted_at=datetime.utcnow(),
-        status="NEW",
-        stage="RAPO"
-    )
-    
-    db.add(db_submission)
-    await db.commit()
-    await db.refresh(db_submission)
-    
-    # Trigger document processing pipeline (async background task)
-    from backend.services.processing_pipeline import processing_pipeline
-    asyncio.create_task(
-        processing_pipeline.process_submission(
-            db_submission.id,
-            [{"name": f.name, "mimeType": f.mimeType, "base64": f.base64} for f in submission.files],
-            db
+        count = result.scalar() or 0
+        sequence = str(count + 1).zfill(3)
+        case_id = f"CAS-{year}-{sequence}"
+        
+        # Create submission record
+        db_submission = Submission(
+            case_id=case_id,
+            email=submission.email,
+            phone=submission.phone,
+            description=submission.description,
+            submitted_at=datetime.utcnow(),
+            status="NEW",
+            stage="RAPO"
         )
-    )
-    
-    return SubmissionResponse.model_validate(db_submission)
+        
+        db.add(db_submission)
+        await db.commit()
+        await db.refresh(db_submission)
+        
+        # Trigger document processing pipeline (async background task)
+        # Create a new session for the background task since the request session will close
+        from backend.services.processing_pipeline import processing_pipeline
+        from backend.database.db import AsyncSessionLocal
+        
+        async def process_in_background():
+            async with AsyncSessionLocal() as bg_db:
+                try:
+                    await processing_pipeline.process_submission(
+                        db_submission.id,
+                        [{"name": f.name, "mimeType": f.mimeType, "base64": f.base64} for f in submission.files],
+                        bg_db
+                    )
+                except Exception as e:
+                    print(f"Background processing error: {e}")
+                    import traceback
+                    traceback.print_exc()
+        
+        asyncio.create_task(process_in_background())
+        
+        return SubmissionResponse.model_validate(db_submission)
+    except Exception as e:
+        print(f"Error in submit_case: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error processing submission: {str(e)}")
 
 @router.get("/cases", response_model=List[CaseResponse])
 async def get_cases(

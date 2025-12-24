@@ -83,9 +83,14 @@ class ApiClient {
             return response.json();
         } catch (error) {
             // Handle network errors (backend not running, CORS, etc.)
-            if (error instanceof TypeError && error.message.includes('fetch')) {
-                throw new Error(`Cannot connect to backend at ${url}. Make sure the backend server is running on port 8000.`);
+            if (error instanceof TypeError) {
+                // Check for specific fetch-related errors
+                const errorMsg = error.message.toLowerCase();
+                if (errorMsg.includes('fetch') || errorMsg.includes('network') || errorMsg.includes('failed')) {
+                    throw new Error(`Cannot connect to backend at ${url}. Make sure the backend server is running on port 8000.`);
+                }
             }
+            // Re-throw other errors as-is
             throw error;
         }
     }
