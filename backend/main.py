@@ -27,6 +27,10 @@ app.include_router(routes.router, prefix="/api", tags=["api"])
 @app.on_event("startup")
 async def startup_event():
     """Initialize database on startup."""
+    # Log configuration status on startup
+    from backend.config import log_config_status
+    log_config_status()
+    
     try:
         await init_db()
         print("✓ Database initialized")

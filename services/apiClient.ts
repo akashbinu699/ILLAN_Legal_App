@@ -2,7 +2,17 @@
  * API client for backend communication.
  * Replaces direct Gemini API calls with backend API calls.
  */
-const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
+// Auto-detect backend URL based on current hostname
+const getBackendUrl = () => {
+    if (import.meta.env.VITE_API_URL) {
+        return import.meta.env.VITE_API_URL;
+    }
+    // Use current hostname (works for both localhost and network IP)
+    const hostname = typeof window !== 'undefined' ? window.location.hostname : 'localhost';
+    return `http://${hostname}:8000/api`;
+};
+
+const API_BASE_URL = getBackendUrl();
 
 export interface ApiSubmission {
     email: string;

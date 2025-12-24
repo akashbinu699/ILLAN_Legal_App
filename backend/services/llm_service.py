@@ -1,7 +1,17 @@
 """LLM service for local and cloud models."""
-from typing import Optional, Dict
-from backend.config import settings
+from typing import Optional, Dict, List
 import os
+
+# Import settings at module level to ensure it's loaded
+from backend.config import settings
+
+# Debug: Log settings on import
+def _log_llm_settings():
+    """Log LLM settings when module is imported."""
+    print(f"[LLM Service Import] GROQ_API_KEY: {'SET' if settings.groq_api_key else 'NOT SET'} (length: {len(settings.groq_api_key)})")
+    print(f"[LLM Service Import] OPENAI_API_KEY: {'SET' if settings.openai_api_key else 'NOT SET'} (length: {len(settings.openai_api_key)})")
+
+_log_llm_settings()
 
 class LLMService:
     """Service for LLM inference."""
@@ -44,18 +54,37 @@ class LLMService:
     
     def _generate_cloud(self, prompt: str, max_tokens: int, temperature: float) -> str:
         """Generate using cloud LLM (Groq preferred, OpenAI as fallback)."""
+        import os
+        
+        # Debug logging
+        print(f"\n[LLM Service] Attempting to generate with cloud LLM...")
+        print(f"[LLM Service] GROQ_API_KEY from settings: {'SET' if settings.groq_api_key else 'NOT SET'} (length: {len(settings.groq_api_key)})")
+        print(f"[LLM Service] OPENAI_API_KEY from settings: {'SET' if settings.openai_api_key else 'NOT SET'} (length: {len(settings.openai_api_key)})")
+        
+        # Also check environment variables directly
+        env_groq = os.getenv('GROQ_API_KEY', '')
+        env_openai = os.getenv('OPENAI_API_KEY', '')
+        print(f"[LLM Service] GROQ_API_KEY from env: {'SET' if env_groq else 'NOT SET'} (length: {len(env_groq)})")
+        print(f"[LLM Service] OPENAI_API_KEY from env: {'SET' if env_openai else 'NOT SET'} (length: {len(env_openai)})")
+        
+        # Try to use environment variable if settings doesn't have it
+        groq_key = settings.groq_api_key or env_groq
+        openai_key = settings.openai_api_key or env_openai
+        
         # Try Groq first if available
-        if settings.groq_api_key:
+        if groq_key:
+            print(f"[LLM Service] Attempting Groq API call...")
             try:
                 from openai import OpenAI
                 # Groq uses OpenAI-compatible API
                 client = OpenAI(
-                    api_key=settings.groq_api_key,
+                    api_key=groq_key,
                     base_url="https://api.groq.com/openai/v1"
                 )
                 
+                print(f"[LLM Service] Groq client created, making API call...")
                 response = client.chat.completions.create(
-                    model="llama-3.1-70b-versatile",  # Fast Groq model
+                    model="llama-3.3-70b-versatile",  # Updated Groq model (llama-3.1-70b was decommissioned)
                     messages=[
                         {"role": "system", "content": "You are a legal assistant helping with French administrative law cases."},
                         {"role": "user", "content": prompt}
@@ -64,16 +93,22 @@ class LLMService:
                     temperature=temperature
                 )
                 
+                print(f"[LLM Service] Groq API call successful!")
                 return response.choices[0].message.content
             except Exception as e:
-                print(f"Error generating with Groq: {str(e)}, falling back to OpenAI")
+                print(f"[LLM Service] Error generating with Groq: {type(e).__name__}: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                print(f"[LLM Service] Falling back to OpenAI...")
         
         # Fallback to OpenAI
-        if settings.openai_api_key:
+        if openai_key:
+            print(f"[LLM Service] Attempting OpenAI API call...")
             try:
                 from openai import OpenAI
-                client = OpenAI(api_key=settings.openai_api_key)
+                client = OpenAI(api_key=openai_key)
                 
+                print(f"[LLM Service] OpenAI client created, making API call...")
                 response = client.chat.completions.create(
                     model="gpt-4-turbo-preview",
                     messages=[
@@ -84,12 +119,17 @@ class LLMService:
                     temperature=temperature
                 )
                 
+                print(f"[LLM Service] OpenAI API call successful!")
                 return response.choices[0].message.content
             except Exception as e:
-                print(f"Error generating with OpenAI: {str(e)}")
+                print(f"[LLM Service] Error generating with OpenAI: {type(e).__name__}: {str(e)}")
+                import traceback
+                traceback.print_exc()
                 return f"Error: {str(e)}"
         
-        return "Error: No LLM API key configured (neither GROQ_API_KEY nor OPENAI_API_KEY)"
+        error_msg = "Error: No LLM API key configured (neither GROQ_API_KEY nor OPENAI_API_KEY found in settings or environment)"
+        print(f"[LLM Service] {error_msg}")
+        return error_msg
     
     def generate_with_citations(
         self,

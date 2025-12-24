@@ -155,40 +155,118 @@ async def query_rag(
     db: AsyncSession = Depends(get_db)
 ):
     """RAG query endpoint for Ilan."""
-    from backend.services.rag_pipeline import rag_pipeline
-    from backend.database.models import Query as QueryModel
-    
-    # Run RAG pipeline
-    result = rag_pipeline.run(query.query)
-    
-    # Save query to database
-    db_query = QueryModel(
-        query_text=query.query,
-        response_text=result['answer'],
-        citations=result.get('citations', []),
-        retrieved_chunk_ids=[chunk.get('id') for chunk in result.get('retrieved_chunks', [])]
-    )
-    db.add(db_query)
-    await db.commit()
-    await db.refresh(db_query)
-    
-    # Format citations
-    citations = []
-    for citation_str in result.get('citations', []):
-        # Parse citation string (format: "Doc-123, Page 2, Section: Title")
-        # This is simplified - in production, use proper parsing
-        citations.append({
-            'document_id': 0,  # TODO: Extract from citation
-            'page_number': 0,  # TODO: Extract from citation
-            'section_title': None,
-            'clause_number': None,
-            'chunk_id': 0
-        })
-    
-    return QueryResponse(
-        response=result['answer'],
-        citations=citations,
-        retrieved_chunks=len(result.get('retrieved_chunks', [])),
-        query_id=db_query.id
-    )
+    try:
+        from backend.services.rag_pipeline import rag_pipeline
+        from backend.database.models import Query as QueryModel
+        
+        # Run RAG pipeline
+        result = rag_pipeline.run(query.query)
+        
+        # Save query to database
+        db_query = QueryModel(
+            query_text=query.query,
+            response_text=result['answer'],
+            citations=result.get('citations', []),
+            retrieved_chunk_ids=[chunk.get('id') for chunk in result.get('retrieved_chunks', [])]
+        )
+        db.add(db_query)
+        await db.commit()
+        await db.refresh(db_query)
+        
+        # Format citations from retrieved chunks
+        # The LLM response contains citations in format [Document X, Page Y]
+        # We need to map these to actual chunk metadata
+        retrieved_chunks = result.get('retrieved_chunks', [])
+        citations = []
+        
+        # Extract citation patterns from the response
+        import re
+        citation_patterns = re.findall(r'\[Document\s+(\d+),\s*Page\s+(\d+)(?:,\s*Section:\s*([^\]]+))?\]', result['answer'])
+        
+        # Create a map of document_id -> chunks for quick lookup
+        chunk_map = {}
+        for chunk in retrieved_chunks:
+            doc_id = chunk.get('metadata', {}).get('document_id', 0)
+            if doc_id not in chunk_map:
+                chunk_map[doc_id] = []
+            chunk_map[doc_id].append(chunk)
+        
+        # Process each citation pattern found in the response
+        seen_citations = set()
+        for doc_id_str, page_str, section in citation_patterns:
+            try:
+                doc_id = int(doc_id_str)
+                page_num = int(page_str)
+                
+                # Create unique key to avoid duplicates
+                citation_key = (doc_id, page_num)
+                if citation_key in seen_citations:
+                    continue
+                seen_citations.add(citation_key)
+                
+                # Find matching chunk
+                matching_chunk = None
+                if doc_id in chunk_map:
+                    # Find chunk with matching page number
+                    for chunk in chunk_map[doc_id]:
+                        chunk_page = chunk.get('metadata', {}).get('page_number', 0)
+                        if chunk_page == page_num or chunk_page == 0:  # Allow 0 as fallback
+                            matching_chunk = chunk
+                            break
+                
+                if matching_chunk:
+                    chunk_id = matching_chunk.get('id', 0)
+                    # Handle UUID strings - convert to integer hash for schema compatibility
+                    if isinstance(chunk_id, str):
+                        # Use hash of UUID string as integer ID
+                        chunk_id = abs(hash(chunk_id)) % (10**9)  # Keep it within reasonable int range
+                    
+                    citations.append({
+                        'document_id': doc_id,
+                        'page_number': page_num,
+                        'section_title': section.strip() if section else matching_chunk.get('metadata', {}).get('section_title'),
+                        'clause_number': matching_chunk.get('metadata', {}).get('clause_number'),
+                        'chunk_id': chunk_id
+                    })
+                else:
+                    # Fallback: create citation from pattern even if chunk not found
+                    citations.append({
+                        'document_id': doc_id,
+                        'page_number': page_num,
+                        'section_title': section.strip() if section else None,
+                        'clause_number': None,
+                        'chunk_id': 0
+                    })
+            except (ValueError, KeyError):
+                # Skip invalid citation patterns
+                continue
+        
+        # If no citations found from patterns, use retrieved chunks as citations
+        if not citations and retrieved_chunks:
+            for chunk in retrieved_chunks[:5]:  # Limit to first 5
+                metadata = chunk.get('metadata', {})
+                chunk_id = chunk.get('id', 0)
+                # Handle UUID strings - convert to integer hash for schema compatibility
+                if isinstance(chunk_id, str):
+                    chunk_id = abs(hash(chunk_id)) % (10**9)  # Keep it within reasonable int range
+                
+                citations.append({
+                    'document_id': metadata.get('document_id', 0),
+                    'page_number': metadata.get('page_number', 0),
+                    'section_title': metadata.get('section_title'),
+                    'clause_number': metadata.get('clause_number'),
+                    'chunk_id': chunk_id
+                })
+        
+        return QueryResponse(
+            response=result['answer'],
+            citations=citations,
+            retrieved_chunks=len(result.get('retrieved_chunks', [])),
+            query_id=db_query.id
+        )
+    except Exception as e:
+        print(f"Error in query_rag: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
 
