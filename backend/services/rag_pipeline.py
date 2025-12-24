@@ -1,5 +1,5 @@
 """LangGraph orchestration for RAG pipeline."""
-from typing import TypedDict, Literal, Dict
+from typing import TypedDict, Literal, Dict, Optional
 from langgraph.graph import StateGraph, END
 from backend.services.retrieval_service import retrieval_service
 from backend.services.llm_service import llm_service
@@ -7,6 +7,7 @@ from backend.services.llm_service import llm_service
 class RAGState(TypedDict):
     """State schema for RAG pipeline."""
     query: str
+    filter_metadata: Optional[Dict]  # Filter metadata for case-specific queries
     retrieved_chunks: list
     draft_answer: str
     critique: str
@@ -52,12 +53,14 @@ class RAGPipeline:
     def _retrieval_node(self, state: RAGState) -> RAGState:
         """Retrieval node: Execute hybrid search + re-ranking."""
         query = state["query"]
+        filter_metadata = state.get("filter_metadata")
         
-        # Retrieve relevant chunks
+        # Retrieve relevant chunks with optional filter
         chunks = retrieval_service.retrieve(
             query=query,
             n_results=10,
-            top_k=3
+            top_k=3,
+            filter_metadata=filter_metadata
         )
         
         return {
@@ -133,6 +136,7 @@ Provide your critique. If the answer is good, say "ACCEPT". If there are issues,
         query = state["query"]
         critique = state["critique"]
         revision_count = state.get("revision_count", 0)
+        filter_metadata = state.get("filter_metadata")  # Preserve filter
         
         # Refine query based on critique
         revision_prompt = f"""Based on this critique, refine the search query to get better results:
@@ -147,16 +151,18 @@ Provide a refined, more specific query that addresses the issues mentioned."""
         return {
             **state,
             "query": refined_query.strip(),
+            "filter_metadata": filter_metadata,  # Preserve filter for next retrieval
             "revision_count": revision_count + 1,
             "retrieved_chunks": [],  # Clear for new retrieval
             "draft_answer": "",  # Clear for new draft
             "critique": ""  # Clear critique
         }
     
-    def run(self, query: str) -> Dict:
-        """Run the RAG pipeline."""
+    def run(self, query: str, filter_metadata: Optional[Dict] = None) -> Dict:
+        """Run the RAG pipeline with optional filter metadata for case-specific queries."""
         initial_state: RAGState = {
             "query": query,
+            "filter_metadata": filter_metadata,
             "retrieved_chunks": [],
             "draft_answer": "",
             "critique": "",

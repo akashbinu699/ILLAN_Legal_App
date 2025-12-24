@@ -37,6 +37,32 @@ export interface ApiCase {
     prestations: Array<{ name: string; isAccepted: boolean }>;
     generatedEmailDraft?: string;
     generatedAppealDraft?: string;
+    emailPrompt?: string;
+    appealPrompt?: string;
+}
+
+export interface CaseUpdate {
+    generatedEmailDraft?: string;
+    generatedAppealDraft?: string;
+    emailPrompt?: string;
+    appealPrompt?: string;
+    stage?: string;
+    status?: string;
+}
+
+export interface QueryHistory {
+    id: number;
+    query_text: string;
+    response_text: string;
+    citations: Array<{
+        document_id: number;
+        page_number: number;
+        section_title?: string;
+        clause_number?: string;
+        chunk_id: number;
+    }>;
+    retrieved_chunk_ids?: any[];
+    created_at: string;
 }
 
 export interface ApiQuery {
@@ -125,6 +151,23 @@ class ApiClient {
             method: 'POST',
             body: JSON.stringify(query),
         });
+    }
+
+    async updateCase(caseId: string, update: CaseUpdate): Promise<ApiCase> {
+        return this.request<ApiCase>(`/case/${caseId}`, {
+            method: 'PATCH',
+            body: JSON.stringify(update),
+        });
+    }
+
+    async generateDrafts(caseId: string): Promise<ApiCase> {
+        return this.request<ApiCase>(`/case/${caseId}/generate-drafts`, {
+            method: 'POST',
+        });
+    }
+
+    async getCaseQueries(caseId: string): Promise<QueryHistory[]> {
+        return this.request<QueryHistory[]>(`/case/${caseId}/queries`);
     }
 }
 

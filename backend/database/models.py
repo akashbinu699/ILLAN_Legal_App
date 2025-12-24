@@ -17,8 +17,15 @@ class Submission(Base):
     status = Column(String, default="NEW")  # NEW, PROCESSING, REVIEWED, SENT
     stage = Column(String, default="RAPO")  # CONTROL, RAPO, LITIGATION
     
+    # Generated drafts and prompts
+    generated_email_draft = Column(Text, nullable=True)
+    generated_appeal_draft = Column(Text, nullable=True)
+    email_prompt = Column(Text, nullable=True)
+    appeal_prompt = Column(Text, nullable=True)
+    
     # Relationships
     documents = relationship("Document", back_populates="submission", cascade="all, delete-orphan")
+    queries = relationship("Query", back_populates="submission", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<Submission(id={self.id}, case_id={self.case_id}, email={self.email})>"
@@ -70,11 +77,15 @@ class Query(Base):
     __tablename__ = "queries"
     
     id = Column(Integer, primary_key=True, index=True)
+    submission_id = Column(Integer, ForeignKey("submissions.id"), nullable=True, index=True)  # Link to case
     query_text = Column(Text)
     response_text = Column(Text)
     citations = Column(JSON)  # List of citations with metadata
     retrieved_chunk_ids = Column(JSON)  # IDs of chunks used
     created_at = Column(DateTime, default=datetime.utcnow)
+    
+    # Relationships
+    submission = relationship("Submission", back_populates="queries")
     
     def __repr__(self):
         return f"<Query(id={self.id}, query_text={self.query_text[:50]}...)>"

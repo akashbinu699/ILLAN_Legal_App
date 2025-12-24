@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { ClientSubmission, CaseStatus, LegalStage } from '../types';
 import { QueryInterface } from './QueryInterface';
+import { apiClient } from '../services/apiClient';
 
 interface LawyerDashboardProps {
     cases: ClientSubmission[];
@@ -24,10 +25,24 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, onUpdat
     const [currentAppealPrompt, setCurrentAppealPrompt] = useState('');
 
     const selectedCase = cases.find(c => c.id === selectedCaseId);
+    const [loadingCase, setLoadingCase] = useState(false);
 
     // Refs to track previous values to avoid overwriting user work with same props
     const prevEmailRef = useRef<string | undefined>(undefined);
     const prevAppealRef = useRef<string | undefined>(undefined);
+    
+    // Debounce timers for auto-save
+    const emailSaveTimer = useRef<NodeJS.Timeout | null>(null);
+    const appealSaveTimer = useRef<NodeJS.Timeout | null>(null);
+    const emailPromptSaveTimer = useRef<NodeJS.Timeout | null>(null);
+    const appealPromptSaveTimer = useRef<NodeJS.Timeout | null>(null);
+
+    // Load case from backend when selected
+    useEffect(() => {
+        if (selectedCaseId) {
+            loadCaseFromBackend(selectedCaseId);
+        }
+    }, [selectedCaseId]);
 
     // Sync state when case changes or when AI updates the draft
     useEffect(() => {
@@ -57,21 +72,110 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, onUpdat
         }
     }, [selectedCase, selectedCase?.generatedEmailDraft, selectedCase?.generatedAppealDraft, selectedCase?.emailPrompt, selectedCase?.appealPrompt]);
 
+    const loadCaseFromBackend = async (caseId: string) => {
+        setLoadingCase(true);
+        try {
+            const apiCase = await apiClient.getCase(caseId);
+            
+            // Check if drafts need to be generated
+            if (!apiCase.generatedEmailDraft || !apiCase.generatedAppealDraft) {
+                // Generate drafts if missing
+                try {
+                    const updatedCase = await apiClient.generateDrafts(caseId);
+                    // Update local state with generated drafts
+                    onUpdateCase(caseId, {
+                        generatedEmailDraft: updatedCase.generatedEmailDraft,
+                        generatedAppealDraft: updatedCase.generatedAppealDraft,
+                        emailPrompt: updatedCase.emailPrompt,
+                        appealPrompt: updatedCase.appealPrompt
+                    });
+                } catch (error) {
+                    console.error("Failed to generate drafts:", error);
+                }
+            } else {
+                // Update local state with loaded data
+                onUpdateCase(caseId, {
+                    generatedEmailDraft: apiCase.generatedEmailDraft,
+                    generatedAppealDraft: apiCase.generatedAppealDraft,
+                    emailPrompt: apiCase.emailPrompt,
+                    appealPrompt: apiCase.appealPrompt
+                });
+            }
+        } catch (error) {
+            console.error("Failed to load case from backend:", error);
+        } finally {
+            setLoadingCase(false);
+        }
+    };
+
     const handleContentChange = (type: 'email' | 'appeal', newVal: string) => {
         if (type === 'email') setEmailContent(newVal);
         else setAppealContent(newVal);
+        
+        // Auto-save with debounce (500ms)
+        if (!selectedCaseId) return;
+        const timerRef = type === 'email' ? emailSaveTimer : appealSaveTimer;
+        
+        // Clear existing timer
+        if (timerRef.current) {
+            clearTimeout(timerRef.current);
+        }
+        
+        // Set new timer - capture newVal in closure
+        const valueToSave = newVal;
+        timerRef.current = setTimeout(() => {
+            // Update ref so useEffect doesn't overwrite us with our own data
+            if (type === 'email') prevEmailRef.current = valueToSave;
+            else prevAppealRef.current = valueToSave;
+            
+            onUpdateCase(selectedCaseId, type === 'email' 
+                ? { generatedEmailDraft: valueToSave }
+                : { generatedAppealDraft: valueToSave }
+            );
+        }, 500);
     };
 
     const handleBlurSave = (type: 'email' | 'appeal') => {
         if (!selectedCaseId) return;
         const content = type === 'email' ? emailContent : appealContent;
         
+        // Clear debounce timer and save immediately
+        const timerRef = type === 'email' ? emailSaveTimer : appealSaveTimer;
+        if (timerRef.current) {
+            clearTimeout(timerRef.current);
+            timerRef.current = null;
+        }
+        
         // Update ref so useEffect doesn't overwrite us with our own data
         if (type === 'email') prevEmailRef.current = content;
         else prevAppealRef.current = content;
 
-        if (type === 'email') onUpdateCase(selectedCaseId, { generatedEmailDraft: content });
-        else onUpdateCase(selectedCaseId, { generatedAppealDraft: content });
+        onUpdateCase(selectedCaseId, type === 'email' 
+            ? { generatedEmailDraft: content }
+            : { generatedAppealDraft: content }
+        );
+    };
+    
+    const handlePromptChange = (type: 'email' | 'appeal', newVal: string) => {
+        if (type === 'email') setCurrentEmailPrompt(newVal);
+        else setCurrentAppealPrompt(newVal);
+        
+        // Auto-save prompt with debounce (1000ms)
+        if (!selectedCaseId) return;
+        const timerRef = type === 'email' ? emailPromptSaveTimer : appealPromptSaveTimer;
+        
+        // Clear existing timer
+        if (timerRef.current) {
+            clearTimeout(timerRef.current);
+        }
+        
+        // Set new timer
+        timerRef.current = setTimeout(() => {
+            onUpdateCase(selectedCaseId, type === 'email' 
+                ? { emailPrompt: newVal }
+                : { appealPrompt: newVal }
+            );
+        }, 1000);
     };
 
     const handleRegenerateClick = async (type: 'email' | 'appeal') => {
@@ -202,7 +306,12 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, onUpdat
 
             {/* Main Content */}
             <div className="flex-1 flex flex-col h-full overflow-hidden">
-                {selectedCase ? (
+                {loadingCase ? (
+                    <div className="flex flex-col items-center justify-center h-full text-gray-400">
+                        <i className="fas fa-spinner fa-spin text-4xl mb-4"></i>
+                        <p className="text-lg">Chargement du dossier...</p>
+                    </div>
+                ) : selectedCase ? (
                     <>
                         {/* Header */}
                         <div className="bg-white border-b shadow-sm">
@@ -332,7 +441,7 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, onUpdat
                                                     <textarea 
                                                         className="w-full h-32 p-4 text-sm font-mono text-gray-700 bg-gray-50 border-none focus:ring-2 focus:ring-inset focus:ring-brand-red/20 outline-none resize-y"
                                                         value={activeTab === 'email' ? currentEmailPrompt : currentAppealPrompt}
-                                                        onChange={(e) => activeTab === 'email' ? setCurrentEmailPrompt(e.target.value) : setCurrentAppealPrompt(e.target.value)}
+                                                        onChange={(e) => handlePromptChange(activeTab, e.target.value)}
                                                         placeholder="Instructions pour la génération..."
                                                     />
                                                     <div className="absolute bottom-2 right-4 text-xs text-gray-400 pointer-events-none">

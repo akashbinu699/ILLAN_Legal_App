@@ -38,7 +38,9 @@ export default function App() {
                 stage: apiCase.stage as LegalStage,
                 prestations: apiCase.prestations || [],
                 generatedEmailDraft: apiCase.generatedEmailDraft,
-                generatedAppealDraft: apiCase.generatedAppealDraft
+                generatedAppealDraft: apiCase.generatedAppealDraft,
+                emailPrompt: apiCase.emailPrompt,
+                appealPrompt: apiCase.appealPrompt
             }));
             setCases(convertedCases);
         } catch (error) {
@@ -81,7 +83,9 @@ export default function App() {
                     stage: response.stage as LegalStage,
                     prestations: response.prestations || [],
                     generatedEmailDraft: response.generatedEmailDraft,
-                    generatedAppealDraft: response.generatedAppealDraft
+                    generatedAppealDraft: response.generatedAppealDraft,
+                    emailPrompt: response.emailPrompt,
+                    appealPrompt: response.appealPrompt
                 };
                 
                 setCases(prev => [newCase, ...prev]);
@@ -146,8 +150,44 @@ export default function App() {
         }
     };
 
-    const handleUpdateCase = (id: string, updates: Partial<ClientSubmission>) => {
+    const handleUpdateCase = async (id: string, updates: Partial<ClientSubmission>) => {
+        // Update local state immediately for responsive UI
         setCases(prev => prev.map(c => c.id === id ? { ...c, ...updates } : c));
+        
+        // Persist to backend if using backend
+        if (useBackend) {
+            try {
+                // Map ClientSubmission fields to API update format
+                const apiUpdate: any = {};
+                if (updates.generatedEmailDraft !== undefined) {
+                    apiUpdate.generatedEmailDraft = updates.generatedEmailDraft;
+                }
+                if (updates.generatedAppealDraft !== undefined) {
+                    apiUpdate.generatedAppealDraft = updates.generatedAppealDraft;
+                }
+                if (updates.emailPrompt !== undefined) {
+                    apiUpdate.emailPrompt = updates.emailPrompt;
+                }
+                if (updates.appealPrompt !== undefined) {
+                    apiUpdate.appealPrompt = updates.appealPrompt;
+                }
+                if (updates.stage !== undefined) {
+                    apiUpdate.stage = updates.stage;
+                }
+                if (updates.status !== undefined) {
+                    apiUpdate.status = updates.status;
+                }
+                
+                // Only make API call if there are fields to update
+                if (Object.keys(apiUpdate).length > 0) {
+                    await apiClient.updateCase(id, apiUpdate);
+                }
+            } catch (error) {
+                console.error("Failed to update case in backend:", error);
+                // Don't show error to user - local state is already updated
+                // The error will be visible on next page load
+            }
+        }
     };
 
     const handleRegenerateDraft = async (id: string, type: 'email' | 'appeal', customPrompt: string) => {

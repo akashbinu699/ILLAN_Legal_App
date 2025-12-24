@@ -24,6 +24,10 @@ class SubmissionResponse(BaseModel):
     submitted_at: datetime
     status: str
     stage: str
+    generated_email_draft: Optional[str] = None
+    generated_appeal_draft: Optional[str] = None
+    email_prompt: Optional[str] = None
+    appeal_prompt: Optional[str] = None
     
     class Config:
         from_attributes = True
@@ -63,6 +67,27 @@ class CaseResponse(BaseModel):
     prestations: List[PrestationSchema] = []
     generatedEmailDraft: Optional[str] = None
     generatedAppealDraft: Optional[str] = None
+    emailPrompt: Optional[str] = None
+    appealPrompt: Optional[str] = None
+    
+    class Config:
+        from_attributes = True
+
+class CaseUpdate(BaseModel):
+    generatedEmailDraft: Optional[str] = None
+    generatedAppealDraft: Optional[str] = None
+    emailPrompt: Optional[str] = None
+    appealPrompt: Optional[str] = None
+    stage: Optional[str] = None
+    status: Optional[str] = None
+
+class QueryHistoryResponse(BaseModel):
+    id: int
+    query_text: str
+    response_text: str
+    citations: List[Citation]
+    retrieved_chunk_ids: Optional[List] = None
+    created_at: datetime
     
     class Config:
         from_attributes = True

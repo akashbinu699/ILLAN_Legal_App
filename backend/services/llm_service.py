@@ -96,10 +96,17 @@ class LLMService:
                 print(f"[LLM Service] Groq API call successful!")
                 return response.choices[0].message.content
             except Exception as e:
-                print(f"[LLM Service] Error generating with Groq: {type(e).__name__}: {str(e)}")
+                error_type = type(e).__name__
+                error_msg = str(e)
+                print(f"[LLM Service] Error generating with Groq: {error_type}: {error_msg}")
                 import traceback
                 traceback.print_exc()
-                print(f"[LLM Service] Falling back to OpenAI...")
+                
+                # Check if it's a rate limit error
+                if "rate_limit" in error_msg.lower() or "429" in error_msg:
+                    print(f"[LLM Service] Groq rate limit hit. Falling back to OpenAI...")
+                else:
+                    print(f"[LLM Service] Groq error. Falling back to OpenAI...")
         
         # Fallback to OpenAI
         if openai_key:
@@ -127,7 +134,14 @@ class LLMService:
                 traceback.print_exc()
                 return f"Error: {str(e)}"
         
-        error_msg = "Error: No LLM API key configured (neither GROQ_API_KEY nor OPENAI_API_KEY found in settings or environment)"
+        # Check if we had a Groq key but it failed (e.g., rate limit)
+        if groq_key and not openai_key:
+            error_msg = "Error: GROQ_API_KEY is configured but hit rate limit, and no OPENAI_API_KEY is available as fallback. Please wait for rate limit to reset or configure OPENAI_API_KEY in .env file."
+        elif not groq_key and not openai_key:
+            error_msg = "Error: No LLM API key configured (neither GROQ_API_KEY nor OPENAI_API_KEY found in settings or environment)"
+        else:
+            error_msg = "Error: Unable to generate response. Both Groq and OpenAI API calls failed."
+        
         print(f"[LLM Service] {error_msg}")
         return error_msg
     

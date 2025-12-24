@@ -9,9 +9,11 @@ from backend.api.schemas import (
     SubmissionResponse,
     QueryRequest,
     QueryResponse,
-    CaseResponse
+    CaseResponse,
+    CaseUpdate,
+    QueryHistoryResponse
 )
-from backend.database.models import Submission
+from backend.database.models import Submission, Query as QueryModel
 from datetime import datetime
 
 router = APIRouter()
@@ -100,7 +102,6 @@ async def get_cases(
     # Convert to response format
     cases = []
     for sub in submissions:
-        # TODO: Add prestations, drafts when available
         case = CaseResponse(
             id=sub.id,
             case_id=sub.case_id,
@@ -111,8 +112,10 @@ async def get_cases(
             status=sub.status,
             stage=sub.stage,
             prestations=[],
-            generatedEmailDraft=None,
-            generatedAppealDraft=None
+            generatedEmailDraft=sub.generated_email_draft,
+            generatedAppealDraft=sub.generated_appeal_draft,
+            emailPrompt=sub.email_prompt,
+            appealPrompt=sub.appeal_prompt
         )
         cases.append(case)
     
@@ -134,7 +137,6 @@ async def get_case(
     if not submission:
         raise HTTPException(status_code=404, detail="Case not found")
     
-    # TODO: Add prestations, drafts when available
     return CaseResponse(
         id=submission.id,
         case_id=submission.case_id,
@@ -145,8 +147,10 @@ async def get_case(
         status=submission.status,
         stage=submission.stage,
         prestations=[],
-        generatedEmailDraft=None,
-        generatedAppealDraft=None
+        generatedEmailDraft=submission.generated_email_draft,
+        generatedAppealDraft=submission.generated_appeal_draft,
+        emailPrompt=submission.email_prompt,
+        appealPrompt=submission.appeal_prompt
     )
 
 @router.post("/query", response_model=QueryResponse)
@@ -158,12 +162,27 @@ async def query_rag(
     try:
         from backend.services.rag_pipeline import rag_pipeline
         from backend.database.models import Query as QueryModel
+        from sqlalchemy import select
         
-        # Run RAG pipeline
-        result = rag_pipeline.run(query.query)
+        # Lookup submission_id from case_id BEFORE running pipeline (for filtering)
+        submission_id = None
+        filter_metadata = None
+        if query.case_id:
+            sub_result = await db.execute(
+                select(Submission).where(Submission.case_id == query.case_id)
+            )
+            submission = sub_result.scalar_one_or_none()
+            if submission:
+                submission_id = submission.id
+                # Create filter metadata to only search documents from this case
+                filter_metadata = {'submission_id': str(submission_id)}
+        
+        # Run RAG pipeline with optional filter
+        result = rag_pipeline.run(query.query, filter_metadata=filter_metadata)
         
         # Save query to database
         db_query = QueryModel(
+            submission_id=submission_id,
             query_text=query.query,
             response_text=result['answer'],
             citations=result.get('citations', []),
@@ -269,4 +288,205 @@ async def query_rag(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Error processing query: {str(e)}")
+
+@router.patch("/case/{case_id}", response_model=CaseResponse)
+async def update_case(
+    case_id: str,
+    update: CaseUpdate,
+    db: AsyncSession = Depends(get_db)
+):
+    """Update case fields (drafts, prompts, stage, status)."""
+    try:
+        from sqlalchemy import select
+        
+        result = await db.execute(
+            select(Submission).where(Submission.case_id == case_id)
+        )
+        submission = result.scalar_one_or_none()
+        
+        if not submission:
+            raise HTTPException(status_code=404, detail="Case not found")
+        
+        # Update fields if provided
+        if update.generatedEmailDraft is not None:
+            submission.generated_email_draft = update.generatedEmailDraft
+        if update.generatedAppealDraft is not None:
+            submission.generated_appeal_draft = update.generatedAppealDraft
+        if update.emailPrompt is not None:
+            submission.email_prompt = update.emailPrompt
+        if update.appealPrompt is not None:
+            submission.appeal_prompt = update.appealPrompt
+        if update.stage is not None:
+            submission.stage = update.stage
+        if update.status is not None:
+            submission.status = update.status
+        
+        await db.commit()
+        await db.refresh(submission)
+        
+        return CaseResponse(
+            id=submission.id,
+            case_id=submission.case_id,
+            email=submission.email,
+            phone=submission.phone,
+            description=submission.description,
+            submitted_at=submission.submitted_at,
+            status=submission.status,
+            stage=submission.stage,
+            prestations=[],
+            generatedEmailDraft=submission.generated_email_draft,
+            generatedAppealDraft=submission.generated_appeal_draft,
+            emailPrompt=submission.email_prompt,
+            appealPrompt=submission.appeal_prompt
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in update_case: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error updating case: {str(e)}")
+
+@router.post("/case/{case_id}/generate-drafts", response_model=CaseResponse)
+async def generate_drafts(
+    case_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Generate email and appeal drafts for a case if missing."""
+    try:
+        from sqlalchemy import select
+        from backend.services.llm_service import llm_service
+        
+        result = await db.execute(
+            select(Submission).where(Submission.case_id == case_id)
+        )
+        submission = result.scalar_one_or_none()
+        
+        if not submission:
+            raise HTTPException(status_code=404, detail="Case not found")
+        
+        # Generate email draft if missing
+        if not submission.generated_email_draft:
+            email_prompt = f"""Generate a professional email draft for a legal case.
+
+Case ID: {submission.case_id}
+Client Email: {submission.email}
+Client Phone: {submission.phone}
+Case Description: {submission.description}
+Stage: {submission.stage}
+
+Generate a professional email draft that can be sent to the client."""
+            
+            try:
+                email_draft = await llm_service.generate(email_prompt)
+                submission.generated_email_draft = email_draft
+                submission.email_prompt = email_prompt
+            except Exception as e:
+                print(f"Error generating email draft: {e}")
+                # Continue even if generation fails
+        
+        # Generate appeal draft if missing
+        if not submission.generated_appeal_draft:
+            appeal_prompt = f"""Generate a professional appeal draft for a legal case.
+
+Case ID: {submission.case_id}
+Client Email: {submission.email}
+Client Phone: {submission.phone}
+Case Description: {submission.description}
+Stage: {submission.stage}
+
+Generate a professional appeal draft that can be used for legal proceedings."""
+            
+            try:
+                appeal_draft = await llm_service.generate(appeal_prompt)
+                submission.generated_appeal_draft = appeal_draft
+                submission.appeal_prompt = appeal_prompt
+            except Exception as e:
+                print(f"Error generating appeal draft: {e}")
+                # Continue even if generation fails
+        
+        await db.commit()
+        await db.refresh(submission)
+        
+        return CaseResponse(
+            id=submission.id,
+            case_id=submission.case_id,
+            email=submission.email,
+            phone=submission.phone,
+            description=submission.description,
+            submitted_at=submission.submitted_at,
+            status=submission.status,
+            stage=submission.stage,
+            prestations=[],
+            generatedEmailDraft=submission.generated_email_draft,
+            generatedAppealDraft=submission.generated_appeal_draft,
+            emailPrompt=submission.email_prompt,
+            appealPrompt=submission.appeal_prompt
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in generate_drafts: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error generating drafts: {str(e)}")
+
+@router.get("/case/{case_id}/queries", response_model=List[QueryHistoryResponse])
+async def get_case_queries(
+    case_id: str,
+    db: AsyncSession = Depends(get_db)
+):
+    """Get query history for a specific case."""
+    try:
+        from sqlalchemy import select
+        
+        # First get the submission
+        result = await db.execute(
+            select(Submission).where(Submission.case_id == case_id)
+        )
+        submission = result.scalar_one_or_none()
+        
+        if not submission:
+            raise HTTPException(status_code=404, detail="Case not found")
+        
+        # Get all queries for this submission
+        query_result = await db.execute(
+            select(QueryModel)
+            .where(QueryModel.submission_id == submission.id)
+            .order_by(QueryModel.created_at.desc())
+        )
+        queries = query_result.scalars().all()
+        
+        # Convert to response format
+        query_responses = []
+        for q in queries:
+            # Parse citations from JSON
+            citations = []
+            if q.citations:
+                for cit in q.citations if isinstance(q.citations, list) else []:
+                    citations.append({
+                        'document_id': cit.get('document_id', 0),
+                        'page_number': cit.get('page_number', 0),
+                        'section_title': cit.get('section_title'),
+                        'clause_number': cit.get('clause_number'),
+                        'chunk_id': cit.get('chunk_id', 0)
+                    })
+            
+            query_responses.append(QueryHistoryResponse(
+                id=q.id,
+                query_text=q.query_text,
+                response_text=q.response_text,
+                citations=citations,
+                retrieved_chunk_ids=q.retrieved_chunk_ids,
+                created_at=q.created_at
+            ))
+        
+        return query_responses
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"Error in get_case_queries: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Error retrieving queries: {str(e)}")
 

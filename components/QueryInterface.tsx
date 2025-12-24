@@ -1,5 +1,5 @@
-import React, { useState } from 'react';
-import { apiClient, ApiQueryResponse } from '../services/apiClient';
+import React, { useState, useEffect } from 'react';
+import { apiClient, ApiQueryResponse, QueryHistory } from '../services/apiClient';
 
 interface QueryInterfaceProps {
     caseId?: string;
@@ -10,6 +10,56 @@ export const QueryInterface: React.FC<QueryInterfaceProps> = ({ caseId }) => {
     const [response, setResponse] = useState<ApiQueryResponse | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
+    const [queryHistory, setQueryHistory] = useState<QueryHistory[]>([]);
+    const [loadingHistory, setLoadingHistory] = useState(false);
+    const [selectedHistoryId, setSelectedHistoryId] = useState<number | null>(null);
+    
+    // Load query history on mount and when caseId changes
+    useEffect(() => {
+        if (caseId) {
+            loadQueryHistory();
+        } else {
+            setQueryHistory([]);
+        }
+    }, [caseId]);
+    
+    const loadQueryHistory = async () => {
+        if (!caseId) return;
+        setLoadingHistory(true);
+        try {
+            const history = await apiClient.getCaseQueries(caseId);
+            setQueryHistory(history);
+            
+            // If there's a most recent query, show it
+            if (history.length > 0 && !response) {
+                const latest = history[0];
+                setQuery(latest.query_text);
+                setResponse({
+                    response: latest.response_text,
+                    citations: latest.citations || [],
+                    retrieved_chunks: latest.retrieved_chunk_ids?.length || 0,
+                    query_id: latest.id
+                });
+                setSelectedHistoryId(latest.id);
+            }
+        } catch (err) {
+            console.error("Failed to load query history:", err);
+        } finally {
+            setLoadingHistory(false);
+        }
+    };
+    
+    const handleSelectHistory = (historyItem: QueryHistory) => {
+        setQuery(historyItem.query_text);
+        setResponse({
+            response: historyItem.response_text,
+            citations: historyItem.citations || [],
+            retrieved_chunks: historyItem.retrieved_chunk_ids?.length || 0,
+            query_id: historyItem.id
+        });
+        setSelectedHistoryId(historyItem.id);
+        setError(null);
+    };
 
     const handleSubmit = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -25,6 +75,12 @@ export const QueryInterface: React.FC<QueryInterfaceProps> = ({ caseId }) => {
                 case_id: caseId
             });
             setResponse(result);
+            setSelectedHistoryId(result.query_id);
+            
+            // Reload query history to include the new query
+            if (caseId) {
+                await loadQueryHistory();
+            }
         } catch (err) {
             setError(err instanceof Error ? err.message : 'An error occurred');
         } finally {
@@ -38,6 +94,35 @@ export const QueryInterface: React.FC<QueryInterfaceProps> = ({ caseId }) => {
                 <i className="fas fa-search mr-2"></i>
                 RAG Query Interface
             </h2>
+
+            {queryHistory.length > 0 && (
+                <div className="mb-4 bg-gray-50 p-4 rounded border border-gray-200">
+                    <h3 className="text-sm font-bold text-gray-700 mb-2 flex items-center">
+                        <i className="fas fa-history mr-2"></i>
+                        Query History ({queryHistory.length})
+                    </h3>
+                    <div className="max-h-40 overflow-y-auto space-y-1">
+                        {queryHistory.map((item) => (
+                            <button
+                                key={item.id}
+                                onClick={() => handleSelectHistory(item)}
+                                className={`w-full text-left px-3 py-2 rounded text-sm transition-colors ${
+                                    selectedHistoryId === item.id
+                                        ? 'bg-brand-red text-white'
+                                        : 'bg-white text-gray-700 hover:bg-gray-100 border border-gray-200'
+                                }`}
+                            >
+                                <div className="flex items-center justify-between">
+                                    <span className="truncate flex-1">{item.query_text}</span>
+                                    <span className="text-xs ml-2 opacity-70">
+                                        {new Date(item.created_at).toLocaleString()}
+                                    </span>
+                                </div>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+            )}
 
             <form onSubmit={handleSubmit} className="mb-4">
                 <div className="flex gap-2">
