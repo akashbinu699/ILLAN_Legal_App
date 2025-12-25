@@ -40,6 +40,9 @@ export interface ClientSubmission {
     // List of detected prestations and their acceptance status
     prestations: Prestation[];
 
+    // Display name for the form (format: (form_number)_DDMMMYY)
+    displayName?: string;
+
     // The generated drafts
     generatedEmailDraft?: string;
     generatedAppealDraft?: string;

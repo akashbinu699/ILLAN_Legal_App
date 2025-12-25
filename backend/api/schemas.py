@@ -58,6 +58,7 @@ class PrestationSchema(BaseModel):
 class CaseResponse(BaseModel):
     id: int
     case_id: str
+    cas_number: Optional[int] = None
     email: str
     phone: str
     description: str
@@ -65,6 +66,7 @@ class CaseResponse(BaseModel):
     status: str
     stage: str
     prestations: List[PrestationSchema] = []
+    display_name: Optional[str] = None  # Format: (form_number)_DDMMMYY
     generatedEmailDraft: Optional[str] = None
     generatedAppealDraft: Optional[str] = None
     emailPrompt: Optional[str] = None
@@ -114,5 +116,7 @@ class StageDetectionResponse(BaseModel):
 
 class EmailGroupResponse(BaseModel):
     email: str
+    cas_number: Optional[int] = None
+    cas_display_name: Optional[str] = None  # Format: CAS-{number}_{email}
     cases: List[CaseResponse]
 

@@ -20,8 +20,20 @@ from backend.api.schemas import (
 )
 from backend.database.models import Submission, Query as QueryModel
 from datetime import datetime
+from sqlalchemy import select, func
 
 router = APIRouter()
+
+def format_date_ddmmmyy(dt: datetime) -> str:
+    """Format datetime as DDMMMYY (e.g., 01JAN25, 21FEB25)."""
+    month_names = {
+        1: 'JAN', 2: 'FEB', 3: 'MAR', 4: 'APR', 5: 'MAY', 6: 'JUN',
+        7: 'JUL', 8: 'AUG', 9: 'SEP', 10: 'OCT', 11: 'NOV', 12: 'DEC'
+    }
+    day = dt.strftime('%d')
+    month = month_names[dt.month]
+    year = dt.strftime('%y')
+    return f"{day}{month}{year}"
 
 @router.post("/submit", response_model=SubmissionResponse)
 async def submit_case(
@@ -34,9 +46,28 @@ async def submit_case(
         now = datetime.now()
         case_id = f"CAS_{now.strftime('%d-%m-%y_%H:%M:%S')}"
         
+        # Assign CAS number to email
+        # Check if email already has a CAS number
+        existing_submission = await db.execute(
+            select(Submission).where(Submission.email == submission.email).limit(1)
+        )
+        existing = existing_submission.scalar_one_or_none()
+        
+        if existing and existing.cas_number is not None:
+            # Reuse existing CAS number for this email
+            cas_number = existing.cas_number
+        else:
+            # Assign new CAS number - find max and increment
+            max_result = await db.execute(
+                select(func.max(Submission.cas_number))
+            )
+            max_cas = max_result.scalar()
+            cas_number = (max_cas + 1) if max_cas is not None else 1
+        
         # Create submission record
         db_submission = Submission(
             case_id=case_id,
+            cas_number=cas_number,
             email=submission.email,
             phone=submission.phone,
             description=submission.description,
@@ -112,33 +143,54 @@ async def get_cases(
     # Group submissions by email
     email_groups = defaultdict(list)
     for sub in submissions:
-        case = CaseResponse(
-            id=sub.id,
-            case_id=sub.case_id,
-            email=sub.email,
-            phone=sub.phone,
-            description=sub.description,
-            submitted_at=sub.submitted_at,
-            status=sub.status,
-            stage=sub.stage,
-            prestations=[],
-            generatedEmailDraft=sub.generated_email_draft,
-            generatedAppealDraft=sub.generated_appeal_draft,
-            emailPrompt=sub.email_prompt,
-            appealPrompt=sub.appeal_prompt
-        )
-        email_groups[sub.email].append(case)
+        email_groups[sub.email].append(sub)
     
-    # Convert to response format - cases within each group are already ordered by submitted_at DESC
-    # Sort email groups by most recent case submission time
+    # Convert to response format with form numbering and display names
     email_group_list = []
-    for email, cases in email_groups.items():
-        # Cases are already in descending order (newest first) from the query
-        # But we'll ensure they're sorted by submitted_at DESC within the group
-        cases_sorted = sorted(cases, key=lambda c: c.submitted_at, reverse=True)
+    for email, subs in email_groups.items():
+        # Sort by submitted_at ASC (oldest first) to assign form numbers
+        subs_sorted_asc = sorted(subs, key=lambda s: s.submitted_at)
+        
+        # Get CAS number from first submission (all should have same CAS number for same email)
+        cas_number = subs_sorted_asc[0].cas_number if subs_sorted_asc[0].cas_number is not None else 0
+        
+        # Create cases with form numbers and display names
+        cases_with_numbers = []
+        for idx, sub in enumerate(subs_sorted_asc, start=1):
+            # Format date as DDMMMYY
+            date_formatted = format_date_ddmmmyy(sub.submitted_at)
+            display_name = f"({idx})_{date_formatted}"
+            
+            case = CaseResponse(
+                id=sub.id,
+                case_id=sub.case_id,
+                cas_number=cas_number,
+                email=sub.email,
+                phone=sub.phone,
+                description=sub.description,
+                submitted_at=sub.submitted_at,
+                status=sub.status,
+                stage=sub.stage,
+                prestations=[],
+                display_name=display_name,
+                generatedEmailDraft=sub.generated_email_draft,
+                generatedAppealDraft=sub.generated_appeal_draft,
+                emailPrompt=sub.email_prompt,
+                appealPrompt=sub.appeal_prompt
+            )
+            cases_with_numbers.append(case)
+        
+        # Reverse sort for display (newest first)
+        cases_sorted_desc = sorted(cases_with_numbers, key=lambda c: c.submitted_at, reverse=True)
+        
+        # Generate CAS display name
+        cas_display_name = f"CAS-{cas_number}_{email}"
+        
         email_group_list.append(EmailGroupResponse(
             email=email,
-            cases=cases_sorted
+            cas_number=cas_number,
+            cas_display_name=cas_display_name,
+            cases=cases_sorted_desc
         ))
     
     # Sort email groups by the most recent case submission time (newest first)
@@ -162,9 +214,29 @@ async def get_case(
     if not submission:
         raise HTTPException(status_code=404, detail="Case not found")
     
+    # Calculate display name for this case
+    # Need to find all cases for this email to determine form number
+    all_subs_for_email = await db.execute(
+        select(Submission).where(Submission.email == submission.email).order_by(Submission.submitted_at.asc())
+    )
+    all_subs = all_subs_for_email.scalars().all()
+    
+    # Find position of this submission (1-based)
+    form_number = None
+    for idx, sub in enumerate(all_subs, start=1):
+        if sub.id == submission.id:
+            form_number = idx
+            break
+    
+    display_name = None
+    if form_number:
+        date_formatted = format_date_ddmmmyy(submission.submitted_at)
+        display_name = f"({form_number})_{date_formatted}"
+    
     return CaseResponse(
         id=submission.id,
         case_id=submission.case_id,
+        cas_number=submission.cas_number,
         email=submission.email,
         phone=submission.phone,
         description=submission.description,
@@ -172,6 +244,7 @@ async def get_case(
         status=submission.status,
         stage=submission.stage,
         prestations=[],
+        display_name=display_name,
         generatedEmailDraft=submission.generated_email_draft,
         generatedAppealDraft=submission.generated_appeal_draft,
         emailPrompt=submission.email_prompt,
@@ -349,9 +422,27 @@ async def update_case(
         await db.commit()
         await db.refresh(submission)
         
+        # Calculate display name for this case
+        all_subs_for_email = await db.execute(
+            select(Submission).where(Submission.email == submission.email).order_by(Submission.submitted_at.asc())
+        )
+        all_subs = all_subs_for_email.scalars().all()
+        
+        form_number = None
+        for idx, sub in enumerate(all_subs, start=1):
+            if sub.id == submission.id:
+                form_number = idx
+                break
+        
+        display_name = None
+        if form_number:
+            date_formatted = format_date_ddmmmyy(submission.submitted_at)
+            display_name = f"({form_number})_{date_formatted}"
+        
         return CaseResponse(
             id=submission.id,
             case_id=submission.case_id,
+            cas_number=submission.cas_number,
             email=submission.email,
             phone=submission.phone,
             description=submission.description,
@@ -359,6 +450,7 @@ async def update_case(
             status=submission.status,
             stage=submission.stage,
             prestations=[],
+            display_name=display_name,
             generatedEmailDraft=submission.generated_email_draft,
             generatedAppealDraft=submission.generated_appeal_draft,
             emailPrompt=submission.email_prompt,
@@ -433,9 +525,27 @@ Generate a professional appeal draft that can be used for legal proceedings."""
         await db.commit()
         await db.refresh(submission)
         
+        # Calculate display name for this case
+        all_subs_for_email = await db.execute(
+            select(Submission).where(Submission.email == submission.email).order_by(Submission.submitted_at.asc())
+        )
+        all_subs = all_subs_for_email.scalars().all()
+        
+        form_number = None
+        for idx, sub in enumerate(all_subs, start=1):
+            if sub.id == submission.id:
+                form_number = idx
+                break
+        
+        display_name = None
+        if form_number:
+            date_formatted = format_date_ddmmmyy(submission.submitted_at)
+            display_name = f"({form_number})_{date_formatted}"
+        
         return CaseResponse(
             id=submission.id,
             case_id=submission.case_id,
+            cas_number=submission.cas_number,
             email=submission.email,
             phone=submission.phone,
             description=submission.description,
@@ -443,6 +553,7 @@ Generate a professional appeal draft that can be used for legal proceedings."""
             status=submission.status,
             stage=submission.stage,
             prestations=[],
+            display_name=display_name,
             generatedEmailDraft=submission.generated_email_draft,
             generatedAppealDraft=submission.generated_appeal_draft,
             emailPrompt=submission.email_prompt,

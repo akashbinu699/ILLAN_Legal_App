@@ -28,6 +28,7 @@ export interface ApiSubmission {
 export interface ApiCase {
     id: number;
     case_id: string;
+    cas_number?: number;
     email: string;
     phone: string;
     description: string;
@@ -35,6 +36,7 @@ export interface ApiCase {
     status: string;
     stage: string;
     prestations: Array<{ name: string; isAccepted: boolean }>;
+    display_name?: string;  // Format: (form_number)_DDMMMYY
     generatedEmailDraft?: string;
     generatedAppealDraft?: string;
     emailPrompt?: string;
@@ -43,6 +45,8 @@ export interface ApiCase {
 
 export interface EmailGroup {
     email: string;
+    cas_number?: number;
+    cas_display_name?: string;  // Format: CAS-{number}_{email}
     cases: ApiCase[];
 }
 

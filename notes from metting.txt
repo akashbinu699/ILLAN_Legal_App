@@ -1,0 +1,17 @@
+when user submits a form - it gets sent straight to the email with all attachements (and also gets added to the database)
+
+dont include the full time on the form name. instead label it with a case number and date (keep the case number for each email address (so one email is always same case number) and add a little "(1)" at the end to show which draft it is). Here's an example: CAS_12/13/25_(2)
+
+this file tells yes and no answers and legal procedures (it gets fed into the AI everytime we prompt it) - /Users/artemprokhorov/Desktop/Jobs : Work/Nanny AI/Ilan_Legal_App/services/knowledgeBase.ts
+or this one: /Users/artemprokhorov/Desktop/Jobs : Work/Nanny AI/Ilan_Legal_App/services/geminiService.t
+when we send the emails and ready to launch the app. the app should pull all the emails to the database and displayedo n front end
+
+RAG querry should hold all the materials to each client (so RAG will use memory for each client seperately)
+RAG querry should know all the drafts and case info for that specific email (email has its own case number). so rag should know all the info provided by that specific email.
+
+
+in "details" section of our web app interface: we should have email and phone number that we pulled from the database
+
+every time client submits a form - Ilan should get an email, and it should get added to our database
+
+if there's a way to pull old files from Ilan's email box to add to our database.maybe we can write a little script later to do that.

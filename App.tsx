@@ -14,7 +14,7 @@ enum View {
 export default function App() {
     const [currentView, setCurrentView] = useState<View>(View.CLIENT);
     const [cases, setCases] = useState<ClientSubmission[]>([]);
-    const [emailGroups, setEmailGroups] = useState<Array<{ email: string; cases: ClientSubmission[] }>>([]);
+    const [emailGroups, setEmailGroups] = useState<Array<{ email: string; casDisplayName?: string; cases: ClientSubmission[] }>>([]);
     
     // Load cases from backend on mount
     useEffect(() => {
@@ -25,7 +25,7 @@ export default function App() {
         try {
             const apiEmailGroups = await apiClient.getCases();
             // Convert grouped API response to grouped ClientSubmission format
-            const convertedGroups: Array<{ email: string; cases: ClientSubmission[] }> = [];
+            const convertedGroups: Array<{ email: string; casDisplayName?: string; cases: ClientSubmission[] }> = [];
             const allCases: ClientSubmission[] = [];
             
             for (const group of apiEmailGroups) {
@@ -41,6 +41,7 @@ export default function App() {
                         status: apiCase.status as CaseStatus,
                         stage: apiCase.stage as LegalStage,
                         prestations: apiCase.prestations || [],
+                        displayName: apiCase.display_name,
                         generatedEmailDraft: apiCase.generatedEmailDraft,
                         generatedAppealDraft: apiCase.generatedAppealDraft,
                         emailPrompt: apiCase.emailPrompt,
@@ -51,6 +52,7 @@ export default function App() {
                 }
                 convertedGroups.push({
                     email: group.email,
+                    casDisplayName: group.cas_display_name || group.email,
                     cases: groupCases
                 });
             }
@@ -94,6 +96,7 @@ export default function App() {
                 status: response.status as CaseStatus,
                 stage: response.stage as LegalStage,
                 prestations: response.prestations || [],
+                displayName: response.display_name,
                 generatedEmailDraft: response.generatedEmailDraft,
                 generatedAppealDraft: response.generatedAppealDraft,
                 emailPrompt: response.emailPrompt,

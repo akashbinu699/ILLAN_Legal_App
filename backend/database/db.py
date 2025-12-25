@@ -68,6 +68,11 @@ async def migrate_database(conn):
         if 'appeal_prompt' not in columns:
             await conn.execute(text("ALTER TABLE submissions ADD COLUMN appeal_prompt TEXT"))
             print("✓ Added appeal_prompt column")
+        
+        if 'cas_number' not in columns:
+            await conn.execute(text("ALTER TABLE submissions ADD COLUMN cas_number INTEGER"))
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_submissions_cas_number ON submissions(cas_number)"))
+            print("✓ Added cas_number column")
     except Exception as e:
         # Table might not exist yet, which is fine
         print(f"Migration check: {e}")

@@ -5,7 +5,7 @@ import { apiClient } from '../services/apiClient';
 
 interface LawyerDashboardProps {
     cases: ClientSubmission[];
-    emailGroups: Array<{ email: string; cases: ClientSubmission[] }>;
+    emailGroups: Array<{ email: string; casDisplayName?: string; cases: ClientSubmission[] }>;
     onUpdateCase: (id: string, updates: Partial<ClientSubmission>) => void;
     onRegenerateDraft: (id: string, type: 'email' | 'appeal', customPrompt: string) => Promise<void>;
     onStageChange: (id: string, newStage: LegalStage) => Promise<void>;
@@ -285,6 +285,7 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, emailGr
             });
             return Array.from(groups.entries()).map(([email, cases]) => ({
                 email,
+                casDisplayName: email, // Fallback to email if no CAS display name
                 cases: cases.sort((a, b) => b.submittedAt.getTime() - a.submittedAt.getTime()) // Newest first
             })).sort((a, b) => {
                 // Sort groups by most recent case
@@ -380,7 +381,7 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, emailGr
                                     <div className="flex items-center flex-1 min-w-0">
                                         <i className={`fas fa-chevron-${isExpanded ? 'down' : 'right'} mr-2 text-gray-400 text-xs`}></i>
                                         <i className="fas fa-envelope mr-2 text-brand-red"></i>
-                                        <span className="font-semibold text-sm text-gray-800 truncate">{group.email}</span>
+                                        <span className="font-semibold text-sm text-gray-800 truncate">{group.casDisplayName || group.email}</span>
                                         <span className="ml-2 text-xs text-gray-500">({group.cases.length})</span>
                                     </div>
                                 </div>
@@ -400,7 +401,7 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, emailGr
                                                 }`}
                                             >
                                                 <div className="flex justify-between mb-1">
-                                                    <span className="font-bold text-gray-800 text-sm">{c.id}</span>
+                                                    <span className="font-bold text-gray-800 text-sm">{c.displayName || c.id}</span>
                                                     <span className="text-xs text-gray-400">{c.submittedAt.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between mb-2">
@@ -450,7 +451,16 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, emailGr
                         <div className="bg-white border-b shadow-sm">
                             <div className="p-6 flex justify-between items-start pb-4">
                                 <div>
-                                    <h1 className="text-2xl font-bold text-gray-800 mb-1">Dossier #{selectedCase.id}</h1>
+                                    {(() => {
+                                        // Find the CAS display name for this case's email group
+                                        const caseGroup = groupedCases.find(g => g.email === selectedCase.email);
+                                        const casDisplayName = caseGroup?.casDisplayName || selectedCase.email;
+                                        const displayName = selectedCase.displayName || selectedCase.id;
+                                        const headerText = `${casDisplayName} - ${displayName}`;
+                                        return (
+                                            <h1 className="text-2xl font-bold text-gray-800 mb-1">{headerText}</h1>
+                                        );
+                                    })()}
                                     <div className="flex flex-col space-y-2">
                                         <div className="flex space-x-6 text-sm text-gray-600">
                                             <span><i className="fas fa-envelope mr-2"></i>{selectedCase.email}</span>
