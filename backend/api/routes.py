@@ -80,6 +80,84 @@ async def submit_case(
         await db.commit()
         await db.refresh(db_submission)
         
+        # Send email notification (async, don't block response)
+        async def send_notification_email():
+            try:
+                from backend.services.gmail_service import gmail_service
+                from backend.config import settings
+                from backend.database.db import AsyncSessionLocal
+                
+                if not settings.notification_email:
+                    print("NOTIFICATION_EMAIL not configured, skipping email send")
+                    return
+                
+                # Calculate form number and display name using a new database session
+                async with AsyncSessionLocal() as email_db:
+                    all_subs_for_email = await email_db.execute(
+                        select(Submission).where(Submission.email == submission.email).order_by(Submission.submitted_at.asc())
+                    )
+                    all_subs = all_subs_for_email.scalars().all()
+                    
+                    form_number = None
+                    for idx, sub in enumerate(all_subs, start=1):
+                        if sub.id == db_submission.id:
+                            form_number = idx
+                            break
+                    
+                    display_name = None
+                    if form_number:
+                        date_formatted = format_date_ddmmmyy(db_submission.submitted_at)
+                        display_name = f"({form_number})_{date_formatted}"
+                    else:
+                        display_name = db_submission.case_id
+                
+                # Format email subject
+                cas_display_name = f"CAS-{cas_number}_{submission.email}"
+                subject = f"New Case Submission: {cas_display_name} - {display_name}"
+                
+                # Format email body
+                attachment_names = [f.name for f in submission.files]
+                body = f"""New form submission received:
+
+Case: {cas_display_name}
+Form: {display_name}
+Client Email: {submission.email}
+Client Phone: {submission.phone}
+Description: {submission.description}
+
+Attachments: {', '.join(attachment_names) if attachment_names else 'None'}
+"""
+                
+                # Send email with attachments
+                attachments = [
+                    {
+                        'name': f.name,
+                        'mimeType': f.mimeType,
+                        'base64': f.base64
+                    }
+                    for f in submission.files
+                ]
+                
+                success = gmail_service.send_email_with_attachments(
+                    to_email=settings.notification_email,
+                    subject=subject,
+                    body=body,
+                    attachments=attachments
+                )
+                
+                if success:
+                    print(f"Notification email sent successfully to {settings.notification_email}")
+                else:
+                    print(f"Failed to send notification email to {settings.notification_email}")
+                    
+            except Exception as e:
+                print(f"Error sending notification email: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # Fire and forget - send email in background
+        asyncio.create_task(send_notification_email())
+        
         # Trigger document processing pipeline (async background task)
         # Create a new session for the background task since the request session will close
         # This runs in the background and doesn't block the response

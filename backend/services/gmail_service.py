@@ -2,6 +2,8 @@
 import base64
 import email
 from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from email.mime.base import MIMEBase
 from typing import List, Dict, Optional
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
@@ -203,6 +205,81 @@ class GmailService:
                 form_data[key.strip()] = value.strip()
         
         return form_data
+    
+    def send_email_with_attachments(
+        self,
+        to_email: str,
+        subject: str,
+        body: str,
+        attachments: List[Dict] = None
+    ) -> bool:
+        """
+        Send an email with attachments via Gmail API.
+        
+        Args:
+            to_email: Recipient email address
+            subject: Email subject
+            body: Email body text
+            attachments: List of dicts with 'name', 'mimeType', and 'base64' keys
+            
+        Returns:
+            True if email sent successfully, False otherwise
+        """
+        if not self.service:
+            try:
+                self.authenticate()
+            except Exception as e:
+                print(f"Failed to authenticate Gmail service: {e}")
+                return False
+        
+        try:
+            # Create message
+            message = MIMEMultipart()
+            message['to'] = to_email
+            message['subject'] = subject
+            
+            # Add body
+            message.attach(MIMEText(body, 'plain'))
+            
+            # Add attachments
+            if attachments:
+                for attachment in attachments:
+                    filename = attachment.get('name', 'attachment')
+                    mime_type = attachment.get('mimeType', 'application/octet-stream')
+                    file_data = base64.b64decode(attachment.get('base64', ''))
+                    
+                    # Create MIME part
+                    part = MIMEBase(*mime_type.split('/', 1))
+                    part.set_payload(file_data)
+                    part.add_header(
+                        'Content-Disposition',
+                        f'attachment; filename= {filename}'
+                    )
+                    
+                    # Encode in base64
+                    email.encoders.encode_base64(part)
+                    message.attach(part)
+            
+            # Encode message
+            raw_message = base64.urlsafe_b64encode(
+                message.as_bytes()
+            ).decode('utf-8')
+            
+            # Send message
+            send_message = self.service.users().messages().send(
+                userId='me',
+                body={'raw': raw_message}
+            ).execute()
+            
+            print(f"Email sent successfully. Message ID: {send_message.get('id')}")
+            return True
+            
+        except HttpError as error:
+            print(f'An error occurred sending email: {error}')
+            return False
+        except Exception as e:
+            print(f'Unexpected error sending email: {e}')
+            return False
 
 # Global instance
 gmail_service = GmailService()

@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     gmail_client_id: str = ""
     gmail_client_secret: str = ""
     gmail_refresh_token: str = ""
+    notification_email: str = ""  # Email address to receive form submissions
     
     # Database
     database_path: str = "./data/database.db"
