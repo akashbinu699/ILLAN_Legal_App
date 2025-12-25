@@ -80,6 +80,19 @@ async def submit_case(
         await db.commit()
         await db.refresh(db_submission)
         
+        # Ensure cas_number is properly set after commit (double-check for consistency)
+        if db_submission.cas_number is None:
+            print(f"[WARNING] cas_number is None after commit for submission {db_submission.id}, reassigning...")
+            # Reassign if somehow None
+            if existing and existing.cas_number is not None:
+                db_submission.cas_number = existing.cas_number
+            else:
+                max_result = await db.execute(select(func.max(Submission.cas_number)))
+                max_cas = max_result.scalar()
+                db_submission.cas_number = (max_cas + 1) if max_cas is not None else 1
+            await db.commit()
+            await db.refresh(db_submission)
+        
         # Send email notification (async, don't block response)
         async def send_notification_email():
             try:
@@ -97,7 +110,19 @@ async def submit_case(
                 print(f"[EMAIL] Notification email configured: {settings.notification_email}")
                 
                 # Calculate form number and display name using a new database session
+                # IMPORTANT: Re-fetch the submission to get the committed cas_number
                 async with AsyncSessionLocal() as email_db:
+                    # Re-fetch the submission to ensure we have the committed cas_number
+                    result = await email_db.execute(
+                        select(Submission).where(Submission.id == db_submission.id)
+                    )
+                    committed_submission = result.scalar_one_or_none()
+                    
+                    if not committed_submission:
+                        print(f"[EMAIL] ERROR: Could not find submission {db_submission.id} in database")
+                        return
+                    
+                    # Get all submissions for this email to calculate form number
                     all_subs_for_email = await email_db.execute(
                         select(Submission).where(Submission.email == submission.email).order_by(Submission.submitted_at.asc())
                     )
@@ -105,32 +130,33 @@ async def submit_case(
                     
                     form_number = None
                     for idx, sub in enumerate(all_subs, start=1):
-                        if sub.id == db_submission.id:
+                        if sub.id == committed_submission.id:
                             form_number = idx
                             break
                     
                     display_name = None
                     if form_number:
-                        date_formatted = format_date_ddmmmyy(db_submission.submitted_at)
+                        date_formatted = format_date_ddmmmyy(committed_submission.submitted_at)
                         display_name = f"({form_number})_{date_formatted}"
                     else:
-                        display_name = db_submission.case_id
+                        display_name = committed_submission.case_id
+                    
+                    # Use the committed cas_number from the database (ensures consistency)
+                    committed_cas_number = committed_submission.cas_number
+                    if committed_cas_number is None:
+                        print(f"[EMAIL] WARNING: cas_number is None for submission {committed_submission.id}, using calculated value")
+                        committed_cas_number = cas_number
                 
-                # Format email subject
-                cas_display_name = f"CAS-{cas_number}_{submission.email}"
+                # Format email subject - use committed cas_number
+                cas_display_name = f"CAS-{committed_cas_number}_{submission.email}"
                 subject = f"New Case Submission: {cas_display_name} - {display_name}"
                 
-                # Format email body
-                attachment_names = [f.name for f in submission.files]
-                body = f"""New form submission received:
-
-Case: {cas_display_name}
-Form: {display_name}
-Client Email: {submission.email}
-Client Phone: {submission.phone}
-Description: {submission.description}
-
-Attachments: {', '.join(attachment_names) if attachment_names else 'None'}
+                # Format email body - just the values, one per line, no labels
+                # Case ID and form name on same line, separated by space
+                body = f"""{cas_display_name} {display_name}
+{submission.email}
+{submission.phone}
+{submission.description}
 """
                 
                 # Send email with attachments
