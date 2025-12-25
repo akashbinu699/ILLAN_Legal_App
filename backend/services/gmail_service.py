@@ -227,58 +227,100 @@ class GmailService:
         """
         if not self.service:
             try:
+                print("[GMAIL] Authenticating Gmail service...")
                 self.authenticate()
+                print("[GMAIL] Authentication successful")
             except Exception as e:
-                print(f"Failed to authenticate Gmail service: {e}")
+                print(f"[GMAIL] ERROR: Failed to authenticate Gmail service: {e}")
+                import traceback
+                traceback.print_exc()
                 return False
         
         try:
+            print(f"[GMAIL] Creating email message to {to_email}")
             # Create message
             message = MIMEMultipart()
             message['to'] = to_email
             message['subject'] = subject
             
+            # Get sender email from Gmail profile
+            try:
+                profile = self.service.users().getProfile(userId='me').execute()
+                sender_email = profile.get('emailAddress', 'me')
+                message['from'] = sender_email
+                print(f"[GMAIL] Sender email: {sender_email}")
+            except Exception as e:
+                print(f"[GMAIL] WARNING: Could not get sender email from profile: {e}")
+                # Gmail API will use the authenticated user's email by default
+                message['from'] = 'me'
+            
             # Add body
             message.attach(MIMEText(body, 'plain'))
+            print(f"[GMAIL] Email body attached ({len(body)} chars)")
             
             # Add attachments
             if attachments:
-                for attachment in attachments:
+                print(f"[GMAIL] Processing {len(attachments)} attachment(s)...")
+                for idx, attachment in enumerate(attachments):
                     filename = attachment.get('name', 'attachment')
                     mime_type = attachment.get('mimeType', 'application/octet-stream')
-                    file_data = base64.b64decode(attachment.get('base64', ''))
+                    base64_data = attachment.get('base64', '')
                     
-                    # Create MIME part
-                    part = MIMEBase(*mime_type.split('/', 1))
-                    part.set_payload(file_data)
-                    part.add_header(
-                        'Content-Disposition',
-                        f'attachment; filename= {filename}'
-                    )
+                    if not base64_data:
+                        print(f"[GMAIL] WARNING: Attachment {idx+1} ({filename}) has no base64 data, skipping")
+                        continue
                     
-                    # Encode in base64
-                    email.encoders.encode_base64(part)
-                    message.attach(part)
+                    try:
+                        file_data = base64.b64decode(base64_data)
+                        print(f"[GMAIL] Decoded attachment {idx+1}: {filename} ({len(file_data)} bytes, {mime_type})")
+                        
+                        # Create MIME part
+                        part = MIMEBase(*mime_type.split('/', 1))
+                        part.set_payload(file_data)
+                        part.add_header(
+                            'Content-Disposition',
+                            f'attachment; filename= {filename}'
+                        )
+                        
+                        # Encode in base64
+                        email.encoders.encode_base64(part)
+                        message.attach(part)
+                        print(f"[GMAIL] Attachment {idx+1} attached successfully")
+                    except Exception as e:
+                        print(f"[GMAIL] ERROR: Failed to process attachment {idx+1} ({filename}): {e}")
+                        continue
+            else:
+                print("[GMAIL] No attachments to process")
             
             # Encode message
+            print("[GMAIL] Encoding message...")
             raw_message = base64.urlsafe_b64encode(
                 message.as_bytes()
             ).decode('utf-8')
+            print(f"[GMAIL] Message encoded ({len(raw_message)} chars)")
             
             # Send message
+            print("[GMAIL] Sending message via Gmail API...")
             send_message = self.service.users().messages().send(
                 userId='me',
                 body={'raw': raw_message}
             ).execute()
             
-            print(f"Email sent successfully. Message ID: {send_message.get('id')}")
+            message_id = send_message.get('id')
+            print(f"[GMAIL] SUCCESS: Email sent successfully. Message ID: {message_id}")
             return True
             
         except HttpError as error:
-            print(f'An error occurred sending email: {error}')
+            print(f'[GMAIL] ERROR: HttpError occurred sending email: {error}')
+            print(f'[GMAIL] Error details: {error.error_details if hasattr(error, "error_details") else "N/A"}')
+            print(f'[GMAIL] Error status: {error.resp.status if hasattr(error, "resp") else "N/A"}')
+            import traceback
+            traceback.print_exc()
             return False
         except Exception as e:
-            print(f'Unexpected error sending email: {e}')
+            print(f'[GMAIL] ERROR: Unexpected error sending email: {e}')
+            import traceback
+            traceback.print_exc()
             return False
 
 # Global instance

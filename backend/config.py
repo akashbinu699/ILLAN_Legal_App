@@ -31,6 +31,7 @@ class Settings(BaseSettings):
     
     # Embedding Model
     embedding_model: str = "nomic-embed-text-v1.5"
+    nomic_api_key: str = ""  # Nomic API key for embeddings (alternative to nomic login)
     
     # Re-ranker (Cohere)
     reranker_api_key: str = ""
@@ -102,6 +103,7 @@ def log_config_status():
     print(f"  - OPENAI_API_KEY: {'SET' if settings.openai_api_key else 'NOT SET'} ({len(settings.openai_api_key)} chars)")
     print(f"  - RERANKER_API_KEY: {'SET' if settings.reranker_api_key else 'NOT SET'}")
     print(f"  - COHERE_API_KEY: {'SET' if settings.cohere_api_key else 'NOT SET'}")
+    print(f"  - NOTIFICATION_EMAIL: {'SET' if settings.notification_email else 'NOT SET'} ({settings.notification_email if settings.notification_email else 'N/A'})")
     
     # Also check environment variables directly
     env_gemini = os.getenv('GEMINI_API_KEY', '')

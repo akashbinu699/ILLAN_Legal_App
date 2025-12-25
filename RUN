@@ -1,0 +1,28 @@
+#!/bin/bash
+# Startup script for Ilan Legal App
+# Kills existing processes and starts both backend and frontend
+
+# Kill existing processes
+echo "Killing existing processes..."
+lsof -ti:8000,3000 | xargs kill -9 2>/dev/null || true
+
+# Wait a moment
+sleep 2
+
+# Get the directory where this script is located
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+
+# Start backend in background (logs will still show)
+# Note: uvicorn must be run from project root, not from backend directory
+echo "Starting backend server..."
+cd "$SCRIPT_DIR"
+python3 -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload &
+
+# Wait a moment for backend to start
+sleep 2
+
+# Start frontend
+echo "Starting frontend server..."
+cd "$SCRIPT_DIR"
+npm run dev
+

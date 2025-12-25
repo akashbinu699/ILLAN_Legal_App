@@ -87,9 +87,14 @@ async def submit_case(
                 from backend.config import settings
                 from backend.database.db import AsyncSessionLocal
                 
+                print(f"[EMAIL] Starting email notification process...")
+                print(f"[EMAIL] NOTIFICATION_EMAIL from settings: {settings.notification_email}")
+                
                 if not settings.notification_email:
-                    print("NOTIFICATION_EMAIL not configured, skipping email send")
+                    print("[EMAIL] ERROR: NOTIFICATION_EMAIL not configured, skipping email send")
                     return
+                
+                print(f"[EMAIL] Notification email configured: {settings.notification_email}")
                 
                 # Calculate form number and display name using a new database session
                 async with AsyncSessionLocal() as email_db:
@@ -138,6 +143,10 @@ Attachments: {', '.join(attachment_names) if attachment_names else 'None'}
                     for f in submission.files
                 ]
                 
+                print(f"[EMAIL] Attempting to send email to {settings.notification_email}")
+                print(f"[EMAIL] Subject: {subject}")
+                print(f"[EMAIL] Number of attachments: {len(attachments)}")
+                
                 success = gmail_service.send_email_with_attachments(
                     to_email=settings.notification_email,
                     subject=subject,
@@ -146,12 +155,12 @@ Attachments: {', '.join(attachment_names) if attachment_names else 'None'}
                 )
                 
                 if success:
-                    print(f"Notification email sent successfully to {settings.notification_email}")
+                    print(f"[EMAIL] SUCCESS: Notification email sent successfully to {settings.notification_email}")
                 else:
-                    print(f"Failed to send notification email to {settings.notification_email}")
+                    print(f"[EMAIL] ERROR: Failed to send notification email to {settings.notification_email}")
                     
             except Exception as e:
-                print(f"Error sending notification email: {e}")
+                print(f"[EMAIL] EXCEPTION: Error sending notification email: {e}")
                 import traceback
                 traceback.print_exc()
         

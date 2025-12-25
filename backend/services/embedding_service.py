@@ -3,6 +3,7 @@ import numpy as np
 from typing import List, Dict, Tuple
 from nomic import embed
 from backend.config import settings
+import os
 
 class EmbeddingService:
     """Service for generating embeddings with Late Chunking strategy."""
@@ -10,6 +11,15 @@ class EmbeddingService:
     def __init__(self):
         self.model_name = settings.embedding_model
         self.context_window = 32768  # 32k context window for nomic-embed-text
+        
+        # Configure Nomic API key if provided
+        if settings.nomic_api_key:
+            os.environ['NOMIC_API_KEY'] = settings.nomic_api_key
+            print(f"[EmbeddingService] Nomic API key configured from settings")
+        elif os.getenv('NOMIC_API_KEY'):
+            print(f"[EmbeddingService] Nomic API key found in environment")
+        else:
+            print(f"[EmbeddingService] WARNING: No Nomic API key configured. Run 'nomic login' or set NOMIC_API_KEY in .env")
     
     def embed_document(self, text: str) -> np.ndarray:
         """Embed entire document for contextual encoding."""
