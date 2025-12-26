@@ -9,7 +9,7 @@ class Submission(Base):
     __tablename__ = "submissions"
     
     id = Column(Integer, primary_key=True, index=True)
-    case_id = Column(String, unique=True, index=True)  # CAS-YYYY-XXX format
+    case_id = Column(String, index=True)  # CAS-YYYY-XXX format (not unique - multiple submissions can share same case_id)
     cas_number = Column(Integer, index=True)  # CAS number assigned to email (CAS-1, CAS-2, etc.)
     email = Column(String, index=True)
     phone = Column(String)

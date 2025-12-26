@@ -43,8 +43,10 @@ async def submit_case(
     """Receive form submission from frontend."""
     try:
         # Generate case ID with timestamp format: CAS_DD-MM-YY_HH:MM:SS
+        # This will be shared by all split submissions from this form
         now = datetime.now()
         case_id = f"CAS_{now.strftime('%d-%m-%y_%H:%M:%S')}"
+        submitted_at = datetime.utcnow()
         
         # Assign CAS number to email
         # Check if email already has a CAS number
@@ -64,40 +66,27 @@ async def submit_case(
             max_cas = max_result.scalar()
             cas_number = (max_cas + 1) if max_cas is not None else 1
         
-        # Create submission record
-        db_submission = Submission(
-            case_id=case_id,
-            cas_number=cas_number,
-            email=submission.email,
-            phone=submission.phone,
-            description=submission.description,
-            submitted_at=datetime.utcnow(),
-            status="NEW",
-            stage="RAPO"
-        )
-        
-        db.add(db_submission)
-        await db.commit()
-        await db.refresh(db_submission)
-        
-        # Ensure cas_number is properly set after commit (double-check for consistency)
-        if db_submission.cas_number is None:
-            print(f"[WARNING] cas_number is None after commit for submission {db_submission.id}, reassigning...")
-            # Reassign if somehow None
-            if existing and existing.cas_number is not None:
-                db_submission.cas_number = existing.cas_number
-            else:
-                max_result = await db.execute(select(func.max(Submission.cas_number)))
-                max_cas = max_result.scalar()
-                db_submission.cas_number = (max_cas + 1) if max_cas is not None else 1
-            await db.commit()
-            await db.refresh(db_submission)
-        
-        # Create document records immediately with filenames so display names can include them
-        # The actual processing will happen in the background, but we need filenames now
+        # Create one Submission record per document (split by document)
+        # All share the same metadata: case_id, cas_number, email, phone, description, submitted_at
         from backend.database.models import Document
+        created_submissions = []
+        
         for file_data in submission.files:
-            # Create document record with filename immediately
+            # Create one Submission per document
+            db_submission = Submission(
+                case_id=case_id,  # Same case_id for all split submissions
+                cas_number=cas_number,  # Same CAS number
+                email=submission.email,
+                phone=submission.phone,
+                description=submission.description,
+                submitted_at=submitted_at,  # Same timestamp
+                status="NEW",
+                stage="RAPO"
+            )
+            db.add(db_submission)
+            await db.flush()  # Get the submission ID
+            
+            # Create one Document record linked to this Submission
             db_document = Document(
                 submission_id=db_submission.id,
                 filename=file_data.name,
@@ -108,9 +97,19 @@ async def submit_case(
                 page_count=0  # Will be filled during processing
             )
             db.add(db_document)
+            created_submissions.append(db_submission)
+        
         await db.commit()
         
+        # Refresh all created submissions
+        for sub in created_submissions:
+            await db.refresh(sub)
+        
+        # Use the first submission for response (they all share the same metadata)
+        db_submission = created_submissions[0]
+        
         # Send email notification (async, don't block response)
+        # Send one email for the entire submission (all split submissions share the same case_id)
         async def send_notification_email():
             try:
                 from backend.services.gmail_service import gmail_service
@@ -126,18 +125,31 @@ async def submit_case(
                 
                 print(f"[EMAIL] Notification email configured: {settings.notification_email}")
                 
-                # Calculate form number and display name using a new database session
-                # IMPORTANT: Re-fetch the submission to get the committed cas_number
+                # Get all split submissions with the same case_id to list all documents
                 async with AsyncSessionLocal() as email_db:
-                    # Re-fetch the submission to ensure we have the committed cas_number
+                    # Get all submissions with the same case_id (all split submissions from this form)
                     result = await email_db.execute(
-                        select(Submission).where(Submission.id == db_submission.id)
+                        select(Submission).where(Submission.case_id == case_id).order_by(Submission.id.asc())
                     )
-                    committed_submission = result.scalar_one_or_none()
+                    all_split_subs = result.scalars().all()
                     
-                    if not committed_submission:
-                        print(f"[EMAIL] ERROR: Could not find submission {db_submission.id} in database")
+                    if not all_split_subs:
+                        print(f"[EMAIL] ERROR: Could not find submissions with case_id {case_id}")
                         return
+                    
+                    # Use the first submission for metadata (they all share the same)
+                    first_submission = all_split_subs[0]
+                    
+                    # Get all document filenames from all split submissions
+                    from sqlalchemy.orm import selectinload
+                    all_filenames = []
+                    for sub in all_split_subs:
+                        result = await email_db.execute(
+                            select(Submission).options(selectinload(Submission.documents)).where(Submission.id == sub.id)
+                        )
+                        sub_with_docs = result.scalar_one()
+                        if sub_with_docs.documents:
+                            all_filenames.append(sub_with_docs.documents[0].filename)
                     
                     # Get all submissions for this email to calculate form number
                     all_subs_for_email = await email_db.execute(
@@ -145,34 +157,24 @@ async def submit_case(
                     )
                     all_subs = all_subs_for_email.scalars().all()
                     
-                    form_number = None
+                    # Find the first submission from this case_id to determine form number
+                    first_submission_idx = None
                     for idx, sub in enumerate(all_subs, start=1):
-                        if sub.id == committed_submission.id:
-                            form_number = idx
+                        if sub.case_id == case_id:
+                            first_submission_idx = idx
                             break
                     
                     # Use the committed cas_number from the database (ensures consistency)
-                    committed_cas_number = committed_submission.cas_number
+                    committed_cas_number = first_submission.cas_number
                     if committed_cas_number is None:
-                        print(f"[EMAIL] WARNING: cas_number is None for submission {committed_submission.id}, using calculated value")
+                        print(f"[EMAIL] WARNING: cas_number is None, using calculated value")
                         committed_cas_number = cas_number
                     
                     # Format date as DDMMMYY
-                    date_formatted = format_date_ddmmmyy(committed_submission.submitted_at)
+                    date_formatted = format_date_ddmmmyy(first_submission.submitted_at)
                     
-                    # Get document filenames for this submission
-                    # Load documents if not already loaded
-                    from sqlalchemy.orm import selectinload
-                    result = await email_db.execute(
-                        select(Submission).options(selectinload(Submission.documents)).where(Submission.id == committed_submission.id)
-                    )
-                    submission_with_docs = result.scalar_one()
-                    
-                    # Extract filenames and join with underscores
-                    filenames = [doc.filename for doc in submission_with_docs.documents if doc.filename]
-                    filename_str = "_".join(filenames) if filenames else ""
-                    
-                    # Format: CASE{number}_{email}_{filenames}_{date}
+                    # Format display name with all filenames (for email subject/body)
+                    filename_str = "_".join(all_filenames) if all_filenames else ""
                     if filename_str:
                         display_name = f"CASE{committed_cas_number}_{submission.email}_{filename_str}_{date_formatted}"
                     else:
@@ -183,14 +185,13 @@ async def submit_case(
                 subject = f"New Case Submission: {cas_display_name} - {display_name}"
                 
                 # Format email body - just the values, one per line, no labels
-                # Case ID and form name on same line, separated by space
-                body = f"""{cas_display_name} {display_name}
+                body = f"""{display_name}
 {submission.email}
 {submission.phone}
 {submission.description}
 """
                 
-                # Send email with attachments
+                # Send email with all attachments from original submission
                 attachments = [
                     {
                         'name': f.name,
@@ -225,6 +226,7 @@ async def submit_case(
         asyncio.create_task(send_notification_email())
         
         # Trigger document processing pipeline (async background task)
+        # Process each split submission separately (each has one document)
         # Create a new session for the background task since the request session will close
         # This runs in the background and doesn't block the response
         from backend.services.processing_pipeline import processing_pipeline
@@ -233,26 +235,35 @@ async def submit_case(
         async def process_in_background():
             async with AsyncSessionLocal() as bg_db:
                 try:
-                    await processing_pipeline.process_submission(
-                        db_submission.id,
-                        [{"name": f.name, "mimeType": f.mimeType, "base64": f.base64} for f in submission.files],
-                        bg_db
-                    )
+                    # Process each split submission (one document each)
+                    for idx, sub in enumerate(created_submissions):
+                        try:
+                            # Get the corresponding file data
+                            file_data = submission.files[idx]
+                            await processing_pipeline.process_submission(
+                                sub.id,
+                                [{"name": file_data.name, "mimeType": file_data.mimeType, "base64": file_data.base64}],
+                                bg_db
+                            )
+                        except Exception as sub_error:
+                            print(f"Background processing error for submission {sub.id}: {sub_error}")
+                            import traceback
+                            traceback.print_exc()
+                            # Update status to indicate processing failed for this submission
+                            try:
+                                result = await bg_db.execute(
+                                    select(Submission).where(Submission.id == sub.id)
+                                )
+                                failed_sub = result.scalar_one_or_none()
+                                if failed_sub:
+                                    failed_sub.status = "NEW"  # Reset status on error
+                                    await bg_db.commit()
+                            except Exception as update_error:
+                                print(f"Failed to update status after processing error: {update_error}")
                 except Exception as e:
-                    print(f"Background processing error for submission {db_submission.id}: {e}")
+                    print(f"Background processing error: {e}")
                     import traceback
                     traceback.print_exc()
-                    # Update status to indicate processing failed
-                    try:
-                        result = await bg_db.execute(
-                            select(Submission).where(Submission.id == db_submission.id)
-                        )
-                        sub = result.scalar_one_or_none()
-                        if sub:
-                            sub.status = "NEW"  # Reset status on error
-                            await bg_db.commit()
-                    except Exception as update_error:
-                        print(f"Failed to update status after processing error: {update_error}")
         
         # Fire and forget - don't await, let it run in background
         asyncio.create_task(process_in_background())
@@ -292,46 +303,69 @@ async def get_cases(
     # Convert to response format with form numbering and display names
     email_group_list = []
     for email, subs in email_groups.items():
-        # Sort by submitted_at ASC (oldest first) to assign form numbers
-        subs_sorted_asc = sorted(subs, key=lambda s: s.submitted_at)
+        # Sort by submitted_at ASC (oldest first), then by case_id to group split submissions
+        subs_sorted_asc = sorted(subs, key=lambda s: (s.submitted_at, s.case_id, s.id))
         
         # Get CAS number from first submission (all should have same CAS number for same email)
         cas_number = subs_sorted_asc[0].cas_number if subs_sorted_asc[0].cas_number is not None else 0
         
+        # Group submissions by case_id to handle form numbering for split submissions
+        # Submissions with the same case_id are from the same original form submission
+        case_id_groups = defaultdict(list)
+        for sub in subs_sorted_asc:
+            case_id_groups[sub.case_id].append(sub)
+        
         # Create cases with form numbers and display names
         cases_with_numbers = []
-        for idx, sub in enumerate(subs_sorted_asc, start=1):
-            # Format date as DDMMMYY
-            date_formatted = format_date_ddmmmyy(sub.submitted_at)
+        form_counter = 1
+        
+        # Process each case_id group (original form submission) in chronological order
+        # Sort by the earliest submitted_at in each group
+        sorted_case_groups = sorted(
+            case_id_groups.items(),
+            key=lambda x: min(s.submitted_at for s in x[1]) if x[1] else datetime.min
+        )
+        
+        for case_id, case_subs in sorted_case_groups:
+            # Sort submissions within the same case_id by ID to maintain order
+            case_subs_sorted = sorted(case_subs, key=lambda s: s.id)
             
-            # Extract filenames and join with underscores (documents already loaded via selectinload)
-            filenames = [doc.filename for doc in sub.documents if doc.filename]
-            filename_str = "_".join(filenames) if filenames else ""
-            
-            # Format: CASE{number}_{email}_{filenames}_{date}
-            if filename_str:
-                display_name = f"CASE{cas_number}_{email}_{filename_str}_{date_formatted}"
-            else:
-                display_name = f"CASE{cas_number}_{email}_{date_formatted}"
-            
-            case = CaseResponse(
-                id=sub.id,
-                case_id=sub.case_id,
-                cas_number=cas_number,
-                email=sub.email,
-                phone=sub.phone,
-                description=sub.description,
-                submitted_at=sub.submitted_at,
-                status=sub.status,
-                stage=sub.stage,
-                prestations=[],
-                display_name=display_name,
-                generatedEmailDraft=sub.generated_email_draft,
-                generatedAppealDraft=sub.generated_appeal_draft,
-                emailPrompt=sub.email_prompt,
-                appealPrompt=sub.appeal_prompt
-            )
-            cases_with_numbers.append(case)
+            # Each submission in this group gets a sequential form number
+            for sub in case_subs_sorted:
+                # Format date as DDMMMYY
+                date_formatted = format_date_ddmmmyy(sub.submitted_at)
+                
+                # Each submission now has only one document (1:1 relationship)
+                # Get the single document filename
+                filename = ""
+                if sub.documents and len(sub.documents) > 0:
+                    filename = sub.documents[0].filename
+                
+                # Format: CASE{number}_{email}_{single_filename}_{date}
+                if filename:
+                    display_name = f"CASE{cas_number}_{email}_{filename}_{date_formatted}"
+                else:
+                    display_name = f"CASE{cas_number}_{email}_{date_formatted}"
+                
+                case = CaseResponse(
+                    id=sub.id,
+                    case_id=sub.case_id,
+                    cas_number=cas_number,
+                    email=sub.email,
+                    phone=sub.phone,
+                    description=sub.description,
+                    submitted_at=sub.submitted_at,
+                    status=sub.status,
+                    stage=sub.stage,
+                    prestations=[],
+                    display_name=display_name,
+                    generatedEmailDraft=sub.generated_email_draft,
+                    generatedAppealDraft=sub.generated_appeal_draft,
+                    emailPrompt=sub.email_prompt,
+                    appealPrompt=sub.appeal_prompt
+                )
+                cases_with_numbers.append(case)
+                form_counter += 1
         
         # Reverse sort for display (newest first)
         cases_sorted_desc = sorted(cases_with_numbers, key=lambda c: c.submitted_at, reverse=True)
@@ -378,16 +412,18 @@ async def get_case(
     # Format date as DDMMMYY
     date_formatted = format_date_ddmmmyy(submission.submitted_at)
     
-    # Get document filenames
-    filenames = [doc.filename for doc in submission.documents if doc.filename]
-    filename_str = "_".join(filenames) if filenames else ""
+    # Each submission now has only one document (1:1 relationship)
+    # Get the single document filename
+    filename = ""
+    if submission.documents and len(submission.documents) > 0:
+        filename = submission.documents[0].filename
     
     # Get CAS number
     cas_number = submission.cas_number if submission.cas_number is not None else 0
     
-    # Format: CASE{number}_{email}_{filenames}_{date}
-    if filename_str:
-        display_name = f"CASE{cas_number}_{submission.email}_{filename_str}_{date_formatted}"
+    # Format: CASE{number}_{email}_{single_filename}_{date}
+    if filename:
+        display_name = f"CASE{cas_number}_{submission.email}_{filename}_{date_formatted}"
     else:
         display_name = f"CASE{cas_number}_{submission.email}_{date_formatted}"
     
@@ -604,16 +640,18 @@ async def update_case(
         # Format date as DDMMMYY
         date_formatted = format_date_ddmmmyy(submission.submitted_at)
         
-        # Get document filenames
-        filenames = [doc.filename for doc in submission.documents if doc.filename]
-        filename_str = "_".join(filenames) if filenames else ""
+        # Each submission now has only one document (1:1 relationship)
+        # Get the single document filename
+        filename = ""
+        if submission.documents and len(submission.documents) > 0:
+            filename = submission.documents[0].filename
         
         # Get CAS number
         cas_number = submission.cas_number if submission.cas_number is not None else 0
         
-        # Format: CASE{number}_{email}_{filenames}_{date}
-        if filename_str:
-            display_name = f"CASE{cas_number}_{submission.email}_{filename_str}_{date_formatted}"
+        # Format: CASE{number}_{email}_{single_filename}_{date}
+        if filename:
+            display_name = f"CASE{cas_number}_{submission.email}_{filename}_{date_formatted}"
         else:
             display_name = f"CASE{cas_number}_{submission.email}_{date_formatted}"
         
@@ -714,16 +752,18 @@ Generate a professional appeal draft that can be used for legal proceedings."""
         # Format date as DDMMMYY
         date_formatted = format_date_ddmmmyy(submission.submitted_at)
         
-        # Get document filenames
-        filenames = [doc.filename for doc in submission.documents if doc.filename]
-        filename_str = "_".join(filenames) if filenames else ""
+        # Each submission now has only one document (1:1 relationship)
+        # Get the single document filename
+        filename = ""
+        if submission.documents and len(submission.documents) > 0:
+            filename = submission.documents[0].filename
         
         # Get CAS number
         cas_number = submission.cas_number if submission.cas_number is not None else 0
         
-        # Format: CASE{number}_{email}_{filenames}_{date}
-        if filename_str:
-            display_name = f"CASE{cas_number}_{submission.email}_{filename_str}_{date_formatted}"
+        # Format: CASE{number}_{email}_{single_filename}_{date}
+        if filename:
+            display_name = f"CASE{cas_number}_{submission.email}_{filename}_{date_formatted}"
         else:
             display_name = f"CASE{cas_number}_{submission.email}_{date_formatted}"
         

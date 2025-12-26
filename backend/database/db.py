@@ -73,6 +73,23 @@ async def migrate_database(conn):
             await conn.execute(text("ALTER TABLE submissions ADD COLUMN cas_number INTEGER"))
             await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_submissions_cas_number ON submissions(cas_number)"))
             print("✓ Added cas_number column")
+        
+        # Remove unique constraint from case_id if it exists (for split submissions)
+        # SQLite doesn't support DROP CONSTRAINT directly, so we recreate the index without unique
+        try:
+            # Check if unique index exists on case_id
+            result = await conn.execute(text("SELECT name FROM sqlite_master WHERE type='index' AND name LIKE '%case_id%'"))
+            indexes = result.fetchall()
+            for idx in indexes:
+                idx_name = idx[0]
+                # Drop the old unique index if it exists
+                await conn.execute(text(f"DROP INDEX IF EXISTS {idx_name}"))
+                print(f"✓ Dropped old index: {idx_name}")
+            # Recreate index without unique constraint
+            await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_submissions_case_id ON submissions(case_id)"))
+            print("✓ Recreated case_id index without unique constraint")
+        except Exception as e:
+            print(f"Migration check for case_id index: {e}")
     except Exception as e:
         # Table might not exist yet, which is fine
         print(f"Migration check: {e}")
