@@ -379,10 +379,10 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, emailGr
                                     className="p-3 bg-gray-50 hover:bg-gray-100 cursor-pointer transition-colors flex items-center justify-between border-b"
                                 >
                                     <div className="flex items-center flex-1 min-w-0">
-                                        <i className={`fas fa-chevron-${isExpanded ? 'down' : 'right'} mr-2 text-gray-400 text-xs`}></i>
-                                        <i className="fas fa-envelope mr-2 text-brand-red"></i>
-                                        <span className="font-semibold text-sm text-gray-800 truncate">{group.email}</span>
-                                        <span className="ml-2 text-xs text-gray-500">({group.cases.length})</span>
+                                        <i className={`fas fa-chevron-${isExpanded ? 'down' : 'right'} mr-2 text-gray-400 text-xs flex-shrink-0`}></i>
+                                        <i className="fas fa-envelope mr-2 text-brand-red flex-shrink-0"></i>
+                                        <span className="font-semibold text-sm text-gray-800 break-words whitespace-normal flex-1 min-w-0">{group.email}</span>
+                                        <span className="ml-2 text-xs text-gray-500 flex-shrink-0">({group.cases.length})</span>
                                     </div>
                                 </div>
                                 
@@ -400,9 +400,9 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, emailGr
                                                     selectedCaseId === c.id ? 'bg-blue-50 border-l-4 border-l-brand-red' : ''
                                                 }`}
                                             >
-                                                <div className="flex justify-between mb-1">
-                                                    <span className="font-bold text-gray-800 text-sm">{c.displayName || c.id}</span>
-                                                    <span className="text-xs text-gray-400">{c.submittedAt.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
+                                                <div className="flex justify-between items-start mb-1 gap-2">
+                                                    <span className="font-bold text-gray-800 text-sm break-words whitespace-normal flex-1 min-w-0">{c.displayName || c.id}</span>
+                                                    <span className="text-xs text-gray-400 flex-shrink-0">{c.submittedAt.toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</span>
                                                 </div>
                                                 <div className="flex items-center justify-between mb-2">
                                                     <span className="text-xs text-gray-500 truncate w-1/2">{c.phone}</span>
@@ -452,10 +452,10 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, emailGr
                             <div className="p-6 flex justify-between items-start pb-4">
                                 <div>
                                     {(() => {
-                                        // Display name now includes CAS number: "CAS-{number} DDMMMYY (form_number)"
+                                        // Display name now includes CAS number and filenames: "CASE{number}_{email}_{filenames}_{date}"
                                         const displayName = selectedCase.displayName || selectedCase.id;
                                         return (
-                                            <h1 className="text-2xl font-bold text-gray-800 mb-1">Dossier # {displayName}</h1>
+                                            <h1 className="text-2xl font-bold text-gray-800 mb-1">{displayName}</h1>
                                         );
                                     })()}
                                     <div className="flex flex-col space-y-2">

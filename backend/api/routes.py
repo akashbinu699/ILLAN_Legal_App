@@ -93,6 +93,23 @@ async def submit_case(
             await db.commit()
             await db.refresh(db_submission)
         
+        # Create document records immediately with filenames so display names can include them
+        # The actual processing will happen in the background, but we need filenames now
+        from backend.database.models import Document
+        for file_data in submission.files:
+            # Create document record with filename immediately
+            db_document = Document(
+                submission_id=db_submission.id,
+                filename=file_data.name,
+                mime_type=file_data.mimeType,
+                original_text="",  # Will be filled during processing
+                cleaned_text="",  # Will be filled during processing
+                structured_data={},  # Will be filled during processing
+                page_count=0  # Will be filled during processing
+            )
+            db.add(db_document)
+        await db.commit()
+        
         # Send email notification (async, don't block response)
         async def send_notification_email():
             try:
@@ -140,13 +157,26 @@ async def submit_case(
                         print(f"[EMAIL] WARNING: cas_number is None for submission {committed_submission.id}, using calculated value")
                         committed_cas_number = cas_number
                     
-                    display_name = None
-                    if form_number:
-                        date_formatted = format_date_ddmmmyy(committed_submission.submitted_at)
-                        # New format: CAS-{number} DDMMMYY (form_number)
-                        display_name = f"CAS-{committed_cas_number} {date_formatted} ({form_number})"
+                    # Format date as DDMMMYY
+                    date_formatted = format_date_ddmmmyy(committed_submission.submitted_at)
+                    
+                    # Get document filenames for this submission
+                    # Load documents if not already loaded
+                    from sqlalchemy.orm import selectinload
+                    result = await email_db.execute(
+                        select(Submission).options(selectinload(Submission.documents)).where(Submission.id == committed_submission.id)
+                    )
+                    submission_with_docs = result.scalar_one()
+                    
+                    # Extract filenames and join with underscores
+                    filenames = [doc.filename for doc in submission_with_docs.documents if doc.filename]
+                    filename_str = "_".join(filenames) if filenames else ""
+                    
+                    # Format: CASE{number}_{email}_{filenames}_{date}
+                    if filename_str:
+                        display_name = f"CASE{committed_cas_number}_{submission.email}_{filename_str}_{date_formatted}"
                     else:
-                        display_name = committed_submission.case_id
+                        display_name = f"CASE{committed_cas_number}_{submission.email}_{date_formatted}"
                 
                 # Format email subject - use committed cas_number
                 cas_display_name = f"CAS-{committed_cas_number}_{submission.email}"
@@ -273,8 +303,16 @@ async def get_cases(
         for idx, sub in enumerate(subs_sorted_asc, start=1):
             # Format date as DDMMMYY
             date_formatted = format_date_ddmmmyy(sub.submitted_at)
-            # New format: CAS-{number} DDMMMYY (form_number)
-            display_name = f"CAS-{cas_number} {date_formatted} ({idx})"
+            
+            # Extract filenames and join with underscores (documents already loaded via selectinload)
+            filenames = [doc.filename for doc in sub.documents if doc.filename]
+            filename_str = "_".join(filenames) if filenames else ""
+            
+            # Format: CASE{number}_{email}_{filenames}_{date}
+            if filename_str:
+                display_name = f"CASE{cas_number}_{email}_{filename_str}_{date_formatted}"
+            else:
+                display_name = f"CASE{cas_number}_{email}_{date_formatted}"
             
             case = CaseResponse(
                 id=sub.id,
@@ -330,25 +368,28 @@ async def get_case(
         raise HTTPException(status_code=404, detail="Case not found")
     
     # Calculate display name for this case
-    # Need to find all cases for this email to determine form number
-    all_subs_for_email = await db.execute(
-        select(Submission).where(Submission.email == submission.email).order_by(Submission.submitted_at.asc())
+    # Load documents for this submission
+    from sqlalchemy.orm import selectinload
+    result = await db.execute(
+        select(Submission).options(selectinload(Submission.documents)).where(Submission.id == submission.id)
     )
-    all_subs = all_subs_for_email.scalars().all()
+    submission = result.scalar_one()
     
-    # Find position of this submission (1-based)
-    form_number = None
-    for idx, sub in enumerate(all_subs, start=1):
-        if sub.id == submission.id:
-            form_number = idx
-            break
+    # Format date as DDMMMYY
+    date_formatted = format_date_ddmmmyy(submission.submitted_at)
     
-    display_name = None
-    if form_number:
-        date_formatted = format_date_ddmmmyy(submission.submitted_at)
-        cas_number = submission.cas_number if submission.cas_number is not None else 0
-        # New format: CAS-{number} DDMMMYY (form_number)
-        display_name = f"CAS-{cas_number} {date_formatted} ({form_number})"
+    # Get document filenames
+    filenames = [doc.filename for doc in submission.documents if doc.filename]
+    filename_str = "_".join(filenames) if filenames else ""
+    
+    # Get CAS number
+    cas_number = submission.cas_number if submission.cas_number is not None else 0
+    
+    # Format: CASE{number}_{email}_{filenames}_{date}
+    if filename_str:
+        display_name = f"CASE{cas_number}_{submission.email}_{filename_str}_{date_formatted}"
+    else:
+        display_name = f"CASE{cas_number}_{submission.email}_{date_formatted}"
     
     return CaseResponse(
         id=submission.id,
@@ -553,23 +594,28 @@ async def update_case(
         await db.refresh(submission)
         
         # Calculate display name for this case
-        all_subs_for_email = await db.execute(
-            select(Submission).where(Submission.email == submission.email).order_by(Submission.submitted_at.asc())
+        # Load documents for this submission
+        from sqlalchemy.orm import selectinload
+        result = await db.execute(
+            select(Submission).options(selectinload(Submission.documents)).where(Submission.id == submission.id)
         )
-        all_subs = all_subs_for_email.scalars().all()
+        submission = result.scalar_one()
         
-        form_number = None
-        for idx, sub in enumerate(all_subs, start=1):
-            if sub.id == submission.id:
-                form_number = idx
-                break
+        # Format date as DDMMMYY
+        date_formatted = format_date_ddmmmyy(submission.submitted_at)
         
-        display_name = None
-        if form_number:
-            date_formatted = format_date_ddmmmyy(submission.submitted_at)
-            cas_number = submission.cas_number if submission.cas_number is not None else 0
-            # New format: CAS-{number} DDMMMYY (form_number)
-            display_name = f"CAS-{cas_number} {date_formatted} ({form_number})"
+        # Get document filenames
+        filenames = [doc.filename for doc in submission.documents if doc.filename]
+        filename_str = "_".join(filenames) if filenames else ""
+        
+        # Get CAS number
+        cas_number = submission.cas_number if submission.cas_number is not None else 0
+        
+        # Format: CASE{number}_{email}_{filenames}_{date}
+        if filename_str:
+            display_name = f"CASE{cas_number}_{submission.email}_{filename_str}_{date_formatted}"
+        else:
+            display_name = f"CASE{cas_number}_{submission.email}_{date_formatted}"
         
         return CaseResponse(
             id=submission.id,
@@ -658,23 +704,28 @@ Generate a professional appeal draft that can be used for legal proceedings."""
         await db.refresh(submission)
         
         # Calculate display name for this case
-        all_subs_for_email = await db.execute(
-            select(Submission).where(Submission.email == submission.email).order_by(Submission.submitted_at.asc())
+        # Load documents for this submission
+        from sqlalchemy.orm import selectinload
+        result = await db.execute(
+            select(Submission).options(selectinload(Submission.documents)).where(Submission.id == submission.id)
         )
-        all_subs = all_subs_for_email.scalars().all()
+        submission = result.scalar_one()
         
-        form_number = None
-        for idx, sub in enumerate(all_subs, start=1):
-            if sub.id == submission.id:
-                form_number = idx
-                break
+        # Format date as DDMMMYY
+        date_formatted = format_date_ddmmmyy(submission.submitted_at)
         
-        display_name = None
-        if form_number:
-            date_formatted = format_date_ddmmmyy(submission.submitted_at)
-            cas_number = submission.cas_number if submission.cas_number is not None else 0
-            # New format: CAS-{number} DDMMMYY (form_number)
-            display_name = f"CAS-{cas_number} {date_formatted} ({form_number})"
+        # Get document filenames
+        filenames = [doc.filename for doc in submission.documents if doc.filename]
+        filename_str = "_".join(filenames) if filenames else ""
+        
+        # Get CAS number
+        cas_number = submission.cas_number if submission.cas_number is not None else 0
+        
+        # Format: CASE{number}_{email}_{filenames}_{date}
+        if filename_str:
+            display_name = f"CASE{cas_number}_{submission.email}_{filename_str}_{date_formatted}"
+        else:
+            display_name = f"CASE{cas_number}_{submission.email}_{date_formatted}"
         
         return CaseResponse(
             id=submission.id,

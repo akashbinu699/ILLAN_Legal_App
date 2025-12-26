@@ -53,17 +53,35 @@ class ProcessingPipeline:
                     processed.get('tables', [])
                 )
                 
-                # Create document record
-                db_document = Document(
-                    submission_id=submission_id,
-                    filename=file_data['name'],
-                    mime_type=file_data['mimeType'],
-                    original_text=processed['text'],
-                    cleaned_text=cleaned['cleaned_text'],
-                    structured_data=cleaned['structured_data'],
-                    page_count=processed.get('page_count', 1)
+                # Update existing document record (created immediately in submit_case)
+                # Find the document by submission_id and filename
+                from sqlalchemy import select
+                result = await db.execute(
+                    select(Document).where(
+                        Document.submission_id == submission_id,
+                        Document.filename == file_data['name']
+                    )
                 )
-                db.add(db_document)
+                db_document = result.scalar_one_or_none()
+                
+                if db_document:
+                    # Update existing document with processed data
+                    db_document.original_text = processed['text']
+                    db_document.cleaned_text = cleaned['cleaned_text']
+                    db_document.structured_data = cleaned['structured_data']
+                    db_document.page_count = processed.get('page_count', 1)
+                else:
+                    # Fallback: create new document if not found (shouldn't happen)
+                    db_document = Document(
+                        submission_id=submission_id,
+                        filename=file_data['name'],
+                        mime_type=file_data['mimeType'],
+                        original_text=processed['text'],
+                        cleaned_text=cleaned['cleaned_text'],
+                        structured_data=cleaned['structured_data'],
+                        page_count=processed.get('page_count', 1)
+                    )
+                    db.add(db_document)
                 await db.flush()  # Get document ID
                 
                 # Step 5: Vectorization with Late Chunking
