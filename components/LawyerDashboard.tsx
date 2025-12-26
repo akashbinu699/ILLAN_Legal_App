@@ -450,12 +450,12 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, emailGr
                         {/* Header */}
                         <div className="bg-white border-b shadow-sm">
                             <div className="p-6 flex justify-between items-start pb-4">
-                                <div>
+                                <div className="flex-1 min-w-0 pr-4">
                                     {(() => {
                                         // Display name now includes CAS number and filenames: "CASE{number}_{email}_{filenames}_{date}"
                                         const displayName = selectedCase.displayName || selectedCase.id;
                                         return (
-                                            <h1 className="text-2xl font-bold text-gray-800 mb-1">{displayName}</h1>
+                                            <h1 className="text-2xl font-bold text-gray-800 mb-1 break-words whitespace-normal">{displayName}</h1>
                                         );
                                     })()}
                                     <div className="flex flex-col space-y-2">
