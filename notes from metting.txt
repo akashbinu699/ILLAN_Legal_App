@@ -14,3 +14,16 @@ RAG querry should know all the drafts and case info for that specific email (ema
 3) in "details" section of our web app interface: we should have email and phone number that we pulled from the database
 
 Extra: if there's a way to pull old files from Ilan's email box to add to our database.maybe we can write a little script later to do that.
+
+
+prompt it on specific case without too much legal
+
+under email we have form number 
+
+just email and then dropdown
+
+remove cas 1, cas 2 (just keep email)
+in dropdown keep just the form number with date
+store case number in the details
+
+1) email. under email it should have form number with dates.

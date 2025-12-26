@@ -134,18 +134,19 @@ async def submit_case(
                             form_number = idx
                             break
                     
-                    display_name = None
-                    if form_number:
-                        date_formatted = format_date_ddmmmyy(committed_submission.submitted_at)
-                        display_name = f"({form_number})_{date_formatted}"
-                    else:
-                        display_name = committed_submission.case_id
-                    
                     # Use the committed cas_number from the database (ensures consistency)
                     committed_cas_number = committed_submission.cas_number
                     if committed_cas_number is None:
                         print(f"[EMAIL] WARNING: cas_number is None for submission {committed_submission.id}, using calculated value")
                         committed_cas_number = cas_number
+                    
+                    display_name = None
+                    if form_number:
+                        date_formatted = format_date_ddmmmyy(committed_submission.submitted_at)
+                        # New format: CAS-{number} DDMMMYY (form_number)
+                        display_name = f"CAS-{committed_cas_number} {date_formatted} ({form_number})"
+                    else:
+                        display_name = committed_submission.case_id
                 
                 # Format email subject - use committed cas_number
                 cas_display_name = f"CAS-{committed_cas_number}_{submission.email}"
@@ -272,7 +273,8 @@ async def get_cases(
         for idx, sub in enumerate(subs_sorted_asc, start=1):
             # Format date as DDMMMYY
             date_formatted = format_date_ddmmmyy(sub.submitted_at)
-            display_name = f"({idx})_{date_formatted}"
+            # New format: CAS-{number} DDMMMYY (form_number)
+            display_name = f"CAS-{cas_number} {date_formatted} ({idx})"
             
             case = CaseResponse(
                 id=sub.id,
@@ -296,8 +298,8 @@ async def get_cases(
         # Reverse sort for display (newest first)
         cases_sorted_desc = sorted(cases_with_numbers, key=lambda c: c.submitted_at, reverse=True)
         
-        # Generate CAS display name
-        cas_display_name = f"CAS-{cas_number}_{email}"
+        # Email group header shows only email (no CAS prefix)
+        cas_display_name = email
         
         email_group_list.append(EmailGroupResponse(
             email=email,
@@ -344,7 +346,9 @@ async def get_case(
     display_name = None
     if form_number:
         date_formatted = format_date_ddmmmyy(submission.submitted_at)
-        display_name = f"({form_number})_{date_formatted}"
+        cas_number = submission.cas_number if submission.cas_number is not None else 0
+        # New format: CAS-{number} DDMMMYY (form_number)
+        display_name = f"CAS-{cas_number} {date_formatted} ({form_number})"
     
     return CaseResponse(
         id=submission.id,
@@ -563,7 +567,9 @@ async def update_case(
         display_name = None
         if form_number:
             date_formatted = format_date_ddmmmyy(submission.submitted_at)
-            display_name = f"({form_number})_{date_formatted}"
+            cas_number = submission.cas_number if submission.cas_number is not None else 0
+            # New format: CAS-{number} DDMMMYY (form_number)
+            display_name = f"CAS-{cas_number} {date_formatted} ({form_number})"
         
         return CaseResponse(
             id=submission.id,
@@ -666,7 +672,9 @@ Generate a professional appeal draft that can be used for legal proceedings."""
         display_name = None
         if form_number:
             date_formatted = format_date_ddmmmyy(submission.submitted_at)
-            display_name = f"({form_number})_{date_formatted}"
+            cas_number = submission.cas_number if submission.cas_number is not None else 0
+            # New format: CAS-{number} DDMMMYY (form_number)
+            display_name = f"CAS-{cas_number} {date_formatted} ({form_number})"
         
         return CaseResponse(
             id=submission.id,

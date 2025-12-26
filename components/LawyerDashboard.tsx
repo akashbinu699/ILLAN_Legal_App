@@ -381,7 +381,7 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, emailGr
                                     <div className="flex items-center flex-1 min-w-0">
                                         <i className={`fas fa-chevron-${isExpanded ? 'down' : 'right'} mr-2 text-gray-400 text-xs`}></i>
                                         <i className="fas fa-envelope mr-2 text-brand-red"></i>
-                                        <span className="font-semibold text-sm text-gray-800 truncate">{group.casDisplayName || group.email}</span>
+                                        <span className="font-semibold text-sm text-gray-800 truncate">{group.email}</span>
                                         <span className="ml-2 text-xs text-gray-500">({group.cases.length})</span>
                                     </div>
                                 </div>
@@ -452,13 +452,10 @@ export const LawyerDashboard: React.FC<LawyerDashboardProps> = ({ cases, emailGr
                             <div className="p-6 flex justify-between items-start pb-4">
                                 <div>
                                     {(() => {
-                                        // Find the CAS display name for this case's email group
-                                        const caseGroup = groupedCases.find(g => g.email === selectedCase.email);
-                                        const casDisplayName = caseGroup?.casDisplayName || selectedCase.email;
+                                        // Display name now includes CAS number: "CAS-{number} DDMMMYY (form_number)"
                                         const displayName = selectedCase.displayName || selectedCase.id;
-                                        const headerText = `${casDisplayName} - ${displayName}`;
                                         return (
-                                            <h1 className="text-2xl font-bold text-gray-800 mb-1">{headerText}</h1>
+                                            <h1 className="text-2xl font-bold text-gray-800 mb-1">Dossier # {displayName}</h1>
                                         );
                                     })()}
                                     <div className="flex flex-col space-y-2">
