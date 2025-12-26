@@ -369,15 +369,15 @@ async def query_rag(
     query: QueryRequest,
     db: AsyncSession = Depends(get_db)
 ):
-    """RAG query endpoint for Ilan."""
+    """RAG query endpoint for Ilan. Searches across all submissions for the email address."""
     try:
         from backend.services.rag_pipeline import rag_pipeline
         from backend.database.models import Query as QueryModel
         from sqlalchemy import select
         
-        # Lookup submission_id from case_id BEFORE running pipeline (for filtering)
+        # Lookup submission by case_id to get email address
         submission_id = None
-        filter_metadata = None
+        submission_ids = None
         if query.case_id:
             sub_result = await db.execute(
                 select(Submission).where(Submission.case_id == query.case_id)
@@ -385,15 +385,28 @@ async def query_rag(
             submission = sub_result.scalar_one_or_none()
             if submission:
                 submission_id = submission.id
-                # Create filter metadata to only search documents from this case
-                filter_metadata = {'submission_id': str(submission_id)}
+                email = submission.email
+                
+                # Find ALL submissions for this email address
+                all_subs_result = await db.execute(
+                    select(Submission).where(Submission.email == email)
+                )
+                all_submissions = all_subs_result.scalars().all()
+                
+                # Extract all submission IDs
+                submission_ids = [sub.id for sub in all_submissions]
         
-        # Run RAG pipeline with optional filter
-        result = rag_pipeline.run(query.query, filter_metadata=filter_metadata)
+        # Run RAG pipeline with submission_ids (email-scoped search)
+        result = rag_pipeline.run(
+            query.query, 
+            filter_metadata=None,  # No longer using single submission_id filter
+            submission_ids=submission_ids
+        )
         
-        # Save query to database
+        # Save query to database with all submission_ids
         db_query = QueryModel(
-            submission_id=submission_id,
+            submission_id=submission_id,  # Keep first/primary submission_id for backward compatibility
+            submission_ids=submission_ids,  # Store all submission_ids as JSON array
             query_text=query.query,
             response_text=result['answer'],
             citations=result.get('citations', []),
@@ -837,17 +850,58 @@ async def get_case_queries(
         if not submission:
             raise HTTPException(status_code=404, detail="Case not found")
         
-        # Get all queries for this submission
+        # Get all queries for this submission or any query that includes this submission in submission_ids
+        # First get queries where submission_id matches
         query_result = await db.execute(
             select(QueryModel)
             .where(QueryModel.submission_id == submission.id)
             .order_by(QueryModel.created_at.desc())
         )
-        queries = query_result.scalars().all()
+        queries_by_submission_id = query_result.scalars().all()
+        
+        # Also get queries where submission_ids contains this submission's id
+        # Get all queries and filter in Python (SQLite JSON operations are limited)
+        all_queries_result = await db.execute(
+            select(QueryModel)
+            .order_by(QueryModel.created_at.desc())
+        )
+        all_queries = all_queries_result.scalars().all()
+        
+        # Filter queries that include this submission in submission_ids
+        queries_by_submission_ids = []
+        for q in all_queries:
+            if q.submission_ids:
+                submission_ids_list = None
+                if isinstance(q.submission_ids, list):
+                    submission_ids_list = q.submission_ids
+                elif isinstance(q.submission_ids, str):
+                    import json
+                    try:
+                        submission_ids_list = json.loads(q.submission_ids)
+                    except (json.JSONDecodeError, TypeError):
+                        submission_ids_list = None
+                
+                if submission_ids_list and submission.id in submission_ids_list:
+                    queries_by_submission_ids.append(q)
+        
+        # Combine and deduplicate queries
+        seen_query_ids = set()
+        all_queries_combined = []
+        for q in queries_by_submission_id:
+            if q.id not in seen_query_ids:
+                all_queries_combined.append(q)
+                seen_query_ids.add(q.id)
+        for q in queries_by_submission_ids:
+            if q.id not in seen_query_ids:
+                all_queries_combined.append(q)
+                seen_query_ids.add(q.id)
+        
+        # Sort by created_at descending
+        all_queries_combined.sort(key=lambda x: x.created_at, reverse=True)
         
         # Convert to response format
         query_responses = []
-        for q in queries:
+        for q in all_queries_combined:
             # Parse citations from JSON
             citations = []
             if q.citations:
@@ -860,12 +914,27 @@ async def get_case_queries(
                         'chunk_id': cit.get('chunk_id', 0)
                     })
             
+            # Parse submission_ids from JSON (stored as TEXT in SQLite)
+            submission_ids_list = None
+            if q.submission_ids:
+                if isinstance(q.submission_ids, list):
+                    submission_ids_list = q.submission_ids
+                elif isinstance(q.submission_ids, str):
+                    # If stored as JSON string, parse it
+                    import json
+                    try:
+                        submission_ids_list = json.loads(q.submission_ids)
+                    except (json.JSONDecodeError, TypeError):
+                        submission_ids_list = None
+            
             query_responses.append(QueryHistoryResponse(
                 id=q.id,
                 query_text=q.query_text,
                 response_text=q.response_text,
                 citations=citations,
                 retrieved_chunk_ids=q.retrieved_chunk_ids,
+                submission_id=q.submission_id,
+                submission_ids=submission_ids_list,
                 created_at=q.created_at
             ))
         

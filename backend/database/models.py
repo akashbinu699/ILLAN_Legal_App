@@ -78,7 +78,8 @@ class Query(Base):
     __tablename__ = "queries"
     
     id = Column(Integer, primary_key=True, index=True)
-    submission_id = Column(Integer, ForeignKey("submissions.id"), nullable=True, index=True)  # Link to case
+    submission_id = Column(Integer, ForeignKey("submissions.id"), nullable=True, index=True)  # Link to case (backward compatibility)
+    submission_ids = Column(JSON, nullable=True)  # Array of all submission IDs for email-scoped queries
     query_text = Column(Text)
     response_text = Column(Text)
     citations = Column(JSON)  # List of citations with metadata

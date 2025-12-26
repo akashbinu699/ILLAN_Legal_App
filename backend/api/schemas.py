@@ -89,6 +89,8 @@ class QueryHistoryResponse(BaseModel):
     response_text: str
     citations: List[Citation]
     retrieved_chunk_ids: Optional[List] = None
+    submission_id: Optional[int] = None  # Backward compatibility
+    submission_ids: Optional[List[int]] = None  # All submission IDs for email-scoped queries
     created_at: datetime
     
     class Config:

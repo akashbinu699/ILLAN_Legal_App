@@ -22,22 +22,37 @@ class RetrievalService:
         self,
         query: str,
         n_results: int = 10,
-        filter_metadata: Optional[Dict] = None
+        filter_metadata: Optional[Dict] = None,
+        submission_ids: Optional[List[int]] = None
     ) -> List[Dict]:
         """
         Hybrid search combining vector search and keyword search (BM25).
         
         For now, we implement vector search. BM25 can be added later
         using a library like rank-bm25.
+        
+        Args:
+            query: Search query text
+            n_results: Number of results to retrieve
+            filter_metadata: Optional filter metadata dict
+            submission_ids: Optional list of submission IDs to filter by (email-scoped queries)
         """
         # Step 1: Embed the query
         query_embedding = embedding_service.embed_query(query)
         
-        # Step 2: Vector search in ChromaDB
+        # Step 2: Prepare filter metadata
+        # If submission_ids provided, add to filter_metadata
+        final_filter = {}
+        if filter_metadata:
+            final_filter.update(filter_metadata)
+        if submission_ids:
+            final_filter['submission_ids'] = submission_ids
+        
+        # Step 3: Vector search in ChromaDB
         vector_results = vector_store.search(
             query_embedding=query_embedding.tolist(),
             n_results=n_results * 2,  # Get more results for re-ranking
-            filter_metadata=filter_metadata
+            filter_metadata=final_filter if final_filter else None
         )
         
         # TODO: Add BM25 keyword search here
@@ -99,18 +114,27 @@ class RetrievalService:
         query: str,
         n_results: int = 10,
         top_k: int = 3,
-        filter_metadata: Optional[Dict] = None
+        filter_metadata: Optional[Dict] = None,
+        submission_ids: Optional[List[int]] = None
     ) -> List[Dict]:
         """
         Complete retrieval pipeline: hybrid search + re-ranking.
         
         Returns top_k most relevant chunks with metadata.
+        
+        Args:
+            query: Search query text
+            n_results: Number of results to retrieve
+            top_k: Number of top results after re-ranking
+            filter_metadata: Optional filter metadata dict
+            submission_ids: Optional list of submission IDs to filter by (email-scoped queries)
         """
         # Step 1: Hybrid search
         search_results = self.hybrid_search(
             query=query,
             n_results=n_results,
-            filter_metadata=filter_metadata
+            filter_metadata=filter_metadata,
+            submission_ids=submission_ids
         )
         
         # Step 2: Re-rank

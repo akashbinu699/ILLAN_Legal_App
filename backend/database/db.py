@@ -86,6 +86,10 @@ async def migrate_database(conn):
             await conn.execute(text("ALTER TABLE queries ADD COLUMN submission_id INTEGER"))
             await conn.execute(text("CREATE INDEX IF NOT EXISTS ix_queries_submission_id ON queries(submission_id)"))
             print("✓ Added submission_id column to queries")
+        
+        if 'submission_ids' not in columns:
+            await conn.execute(text("ALTER TABLE queries ADD COLUMN submission_ids TEXT"))  # JSON stored as TEXT in SQLite
+            print("✓ Added submission_ids column to queries")
     except Exception as e:
         # Table might not exist yet, which is fine
         print(f"Migration check for queries: {e}")

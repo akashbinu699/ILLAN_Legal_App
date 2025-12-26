@@ -65,7 +65,24 @@ class VectorStore:
         """Search for similar chunks."""
         where_clause = None
         if filter_metadata:
-            where_clause = filter_metadata
+            # Handle multiple submission_ids using ChromaDB's $in operator
+            if 'submission_ids' in filter_metadata:
+                submission_ids = filter_metadata['submission_ids']
+                if isinstance(submission_ids, list) and len(submission_ids) > 0:
+                    # Convert to ChromaDB $in filter format (all values must be strings)
+                    where_clause = {
+                        'submission_id': {'$in': [str(sub_id) for sub_id in submission_ids]}
+                    }
+                else:
+                    # Fallback to single submission_id if provided
+                    if 'submission_id' in filter_metadata:
+                        where_clause = {'submission_id': str(filter_metadata['submission_id'])}
+            elif 'submission_id' in filter_metadata:
+                # Single submission_id (backward compatibility)
+                where_clause = {'submission_id': str(filter_metadata['submission_id'])}
+            else:
+                # Use filter_metadata as-is for other filters
+                where_clause = filter_metadata
         
         results = self.collection.query(
             query_embeddings=[query_embedding],
