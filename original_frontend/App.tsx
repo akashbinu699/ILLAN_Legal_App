@@ -1,33 +1,35 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { ClientForm } from './components/ClientForm';
 import { LawyerDashboard } from './components/LawyerDashboard';
-import { ClientSubmission, CaseStatus, LegalStage } from './types';
+import type { ClientSubmission } from './types';
+import { CaseStatus, LegalStage } from './types';
 // Removed direct Gemini imports - all LLM calls now go through backend
 import { apiClient } from './services/apiClient';
 
-enum View {
-    CLIENT = 'CLIENT',
-    LAWYER = 'LAWYER',
-    SUCCESS = 'SUCCESS'
-}
+type View = 'CLIENT' | 'LAWYER' | 'SUCCESS';
+const View = {
+    CLIENT: 'CLIENT' as const,
+    LAWYER: 'LAWYER' as const,
+    SUCCESS: 'SUCCESS' as const
+};
 
 export default function App() {
     const [currentView, setCurrentView] = useState<View>(View.CLIENT);
     const [cases, setCases] = useState<ClientSubmission[]>([]);
     const [emailGroups, setEmailGroups] = useState<Array<{ email: string; casDisplayName?: string; cases: ClientSubmission[] }>>([]);
-    
+
     // Load cases from backend on mount
     useEffect(() => {
         loadCasesFromBackend();
     }, []);
-    
+
     const loadCasesFromBackend = async () => {
         try {
             const apiEmailGroups = await apiClient.getCases();
             // Convert grouped API response to grouped ClientSubmission format
             const convertedGroups: Array<{ email: string; casDisplayName?: string; cases: ClientSubmission[] }> = [];
             const allCases: ClientSubmission[] = [];
-            
+
             for (const group of apiEmailGroups) {
                 const groupCases: ClientSubmission[] = [];
                 for (const apiCase of group.cases) {
@@ -64,12 +66,7 @@ export default function App() {
         }
     };
 
-    const generateCaseId = (index: number) => {
-        const year = new Date().getFullYear();
-        // Generates CAS-2025-001, CAS-2025-002, etc.
-        const sequence = (index + 1).toString().padStart(3, '0');
-        return `CAS-${year}-${sequence}`;
-    };
+
 
     const handleClientSubmit = async (data: Omit<ClientSubmission, 'id' | 'status' | 'submittedAt' | 'stage' | 'prestations' | 'generatedEmailDraft' | 'generatedAppealDraft'>) => {
         // Always use backend API
@@ -84,7 +81,7 @@ export default function App() {
                     base64: f.base64
                 }))
             });
-            
+
             // Convert to ClientSubmission format
             const newCase: ClientSubmission = {
                 id: response.case_id,
@@ -102,10 +99,10 @@ export default function App() {
                 emailPrompt: response.emailPrompt,
                 appealPrompt: response.appealPrompt
             };
-            
+
             setCases(prev => [newCase, ...prev]);
             setCurrentView(View.SUCCESS);
-            
+
             // Reload cases after a delay to get updated status
             setTimeout(() => loadCasesFromBackend(), 2000);
         } catch (error) {
@@ -126,7 +123,7 @@ export default function App() {
     const handleUpdateCase = async (id: string, updates: Partial<ClientSubmission>) => {
         // Update local state immediately for responsive UI
         setCases(prev => prev.map(c => c.id === id ? { ...c, ...updates } : c));
-        
+
         // Always persist to backend
         try {
             // Map ClientSubmission fields to API update format
@@ -149,7 +146,7 @@ export default function App() {
             if (updates.status !== undefined) {
                 apiUpdate.status = updates.status;
             }
-            
+
             // Only make API call if there are fields to update
             if (Object.keys(apiUpdate).length > 0) {
                 await apiClient.updateCase(id, apiUpdate);
@@ -173,7 +170,7 @@ export default function App() {
             // Always use backend API to generate draft
             const result = await apiClient.generateDraft(id, customPrompt, type);
             const content = result.draft;
-            
+
             if (type === 'email') {
                 handleUpdateCase(id, { generatedEmailDraft: content });
             } else {
@@ -191,7 +188,7 @@ export default function App() {
         if (!currentCase) return;
 
         // 1. Update Stage immediately
-        handleUpdateCase(id, { 
+        handleUpdateCase(id, {
             stage: newStage,
             generatedEmailDraft: "♻️ Changement de phase... Régénération de l'email...",
             generatedAppealDraft: "♻️ Changement de phase... Régénération du recours..."
@@ -200,18 +197,18 @@ export default function App() {
         // 2. Regenerate drafts using backend API
         try {
             // Generate email draft
-            const emailResult = await apiClient.generateDraft(id, 
+            const emailResult = await apiClient.generateDraft(id,
                 `Generate a professional email draft for a legal case at stage ${newStage}. Case description: ${currentCase.description}`,
                 'email'
             );
-            
+
             // Generate appeal draft
             const appealResult = await apiClient.generateDraft(id,
                 `Generate a professional appeal draft for a legal case at stage ${newStage}. Case description: ${currentCase.description}`,
                 'appeal'
             );
 
-            handleUpdateCase(id, { 
+            handleUpdateCase(id, {
                 generatedEmailDraft: emailResult.draft,
                 generatedAppealDraft: appealResult.draft,
                 emailPrompt: emailResult.prompt,
@@ -219,8 +216,8 @@ export default function App() {
             });
         } catch (e) {
             console.error("Failed to regenerate after stage change", e);
-            handleUpdateCase(id, { 
-                generatedEmailDraft: "Erreur lors de la régénération.", 
+            handleUpdateCase(id, {
+                generatedEmailDraft: "Erreur lors de la régénération.",
                 generatedAppealDraft: "Erreur lors de la régénération."
             });
         }
@@ -230,19 +227,19 @@ export default function App() {
         <div className="min-h-screen flex flex-col font-sans">
             <nav className="bg-brand-dark text-white p-4 shadow-md flex justify-between items-center z-10 relative">
                 <div className="flex items-center space-x-3">
-                     <div className="w-8 h-8 bg-brand-red rounded-sm flex items-center justify-center">
+                    <div className="w-8 h-8 bg-brand-red rounded-sm flex items-center justify-center">
                         <i className="fas fa-balance-scale-left text-white text-sm"></i>
-                     </div>
-                     <span className="font-semibold text-lg tracking-tight">LegalEase <span className="text-gray-400 font-light">CAF Manager</span></span>
+                    </div>
+                    <span className="font-semibold text-lg tracking-tight">LegalEase <span className="text-gray-400 font-light">CAF Manager</span></span>
                 </div>
                 <div className="space-x-4 text-sm">
-                    <button 
+                    <button
                         onClick={() => setCurrentView(View.CLIENT)}
                         className={`px-3 py-1 rounded transition-colors ${currentView === View.CLIENT || currentView === View.SUCCESS ? 'bg-gray-700 text-white' : 'text-gray-400 hover:text-white'}`}
                     >
                         Vue Client
                     </button>
-                    <button 
+                    <button
                         onClick={() => setCurrentView(View.LAWYER)}
                         className={`px-3 py-1 rounded transition-colors ${currentView === View.LAWYER ? 'bg-brand-red text-white' : 'text-gray-400 hover:text-white'}`}
                     >
@@ -271,7 +268,7 @@ export default function App() {
                         <p className="text-gray-600 max-w-md mb-8">
                             Merci. Notre équipe d'avocats analyse actuellement vos pièces jointes et votre description. Vous recevrez une réponse sous 24h.
                         </p>
-                        <button 
+                        <button
                             onClick={() => setCurrentView(View.LAWYER)}
                             className="bg-brand-dark hover:bg-black text-white px-6 py-3 rounded shadow transition-transform transform hover:-translate-y-1"
                         >
@@ -281,7 +278,7 @@ export default function App() {
                 )}
 
                 {currentView === View.LAWYER && (
-                    <LawyerDashboard 
+                    <LawyerDashboard
                         cases={cases}
                         emailGroups={emailGroups}
                         onUpdateCase={handleUpdateCase}

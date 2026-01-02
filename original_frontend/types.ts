@@ -1,15 +1,17 @@
-export enum CaseStatus {
-    NEW = 'NEW',
-    PROCESSING = 'PROCESSING',
-    REVIEWED = 'REVIEWED',
-    SENT = 'SENT'
-}
+export type CaseStatus = 'NEW' | 'PROCESSING' | 'REVIEWED' | 'SENT';
+export const CaseStatus = {
+    NEW: 'NEW' as const,
+    PROCESSING: 'PROCESSING' as const,
+    REVIEWED: 'REVIEWED' as const,
+    SENT: 'SENT' as const
+};
 
-export enum LegalStage {
-    CONTROL = 'CONTROL', // Contrôle / Procédure contradictoire
-    RAPO = 'RAPO',       // Recours Administratif Préalable Obligatoire
-    LITIGATION = 'LITIGATION' // Recours Contentieux (Tribunal)
-}
+export type LegalStage = 'CONTROL' | 'RAPO' | 'LITIGATION';
+export const LegalStage = {
+    CONTROL: 'CONTROL' as const, // Contrôle / Procédure contradictoire
+    RAPO: 'RAPO' as const,       // Recours Administratif Préalable Obligatoire
+    LITIGATION: 'LITIGATION' as const // Recours Contentieux (Tribunal)
+};
 
 export interface AttachedFile {
     name: string;
@@ -27,16 +29,16 @@ export interface ClientSubmission {
     email: string;
     phone: string;
     description: string;
-    
+
     // Multiple files support
     files: AttachedFile[];
 
     submittedAt: Date;
     status: CaseStatus;
-    
+
     // The detected or selected stage of the case
     stage: LegalStage;
-    
+
     // List of detected prestations and their acceptance status
     prestations: Prestation[];
 

@@ -1,41 +1,38 @@
 """Main processing pipeline that orchestrates all steps."""
 import base64
-from sqlalchemy.ext.asyncio import AsyncSession
-from backend.database.models import Submission, Document, Chunk
 from backend.services.document_processor import DocumentProcessor
 from backend.services.cleaning_service import cleaning_service
 from backend.services.embedding_service import embedding_service
 from backend.services.vector_store import vector_store
-from backend.services.duplicate_detection import DuplicateDetectionService
 from typing import List, Dict
 import asyncio
+from bson import ObjectId
 
 class ProcessingPipeline:
     """Orchestrates the complete processing pipeline."""
     
     @staticmethod
     async def process_submission(
-        submission_id: int,
+        submission_id: str,
         files: List[Dict],
-        db: AsyncSession
+        db
     ):
         """Process a submission through the complete pipeline."""
         # Get submission
-        from sqlalchemy import select
-        result = await db.execute(
-            select(Submission).where(Submission.id == submission_id)
-        )
-        submission = result.scalar_one_or_none()
-        
-        if not submission:
-            raise ValueError(f"Submission {submission_id} not found")
-        
-        # Update status
-        submission.status = "PROCESSING"
-        await db.commit()
-        
         try:
-            # Process each file
+            submission = await db.submissions.find_one({"_id": ObjectId(submission_id)})
+            
+            if not submission:
+                print(f"Submission {submission_id} not found in background task")
+                return
+            
+            # Update status
+            await db.submissions.update_one(
+                {"_id": ObjectId(submission_id)},
+                {"$set": {"status": "PROCESSING"}}
+            )
+            
+            # Process each file (typically just one per split submission)
             for file_data in files:
                 # Decode base64 file
                 file_bytes = base64.b64decode(file_data['base64'])
@@ -53,98 +50,94 @@ class ProcessingPipeline:
                     processed.get('tables', [])
                 )
                 
-                # Update existing document record (created immediately in submit_case)
-                # Find the document by submission_id and filename
-                from sqlalchemy import select
-                result = await db.execute(
-                    select(Document).where(
-                        Document.submission_id == submission_id,
-                        Document.filename == file_data['name']
-                    )
-                )
-                db_document = result.scalar_one_or_none()
-                
-                if db_document:
-                    # Update existing document with processed data
-                    db_document.original_text = processed['text']
-                    db_document.cleaned_text = cleaned['cleaned_text']
-                    db_document.structured_data = cleaned['structured_data']
-                    db_document.page_count = processed.get('page_count', 1)
-                else:
-                    # Fallback: create new document if not found (shouldn't happen)
-                    db_document = Document(
-                        submission_id=submission_id,
-                        filename=file_data['name'],
-                        mime_type=file_data['mimeType'],
-                        original_text=processed['text'],
-                        cleaned_text=cleaned['cleaned_text'],
-                        structured_data=cleaned['structured_data'],
-                        page_count=processed.get('page_count', 1)
-                    )
-                    db.add(db_document)
-                await db.flush()  # Get document ID
+                # Update submission's embedded document with results
+                doc_update = {
+                    "document.original_text": processed['text'],
+                    "document.cleaned_text": cleaned['cleaned_text'],
+                    "document.structured_data": cleaned['structured_data'],
+                    "document.page_count": processed.get('page_count', 1),
+                    "document.processed_at": asyncio.get_event_loop().time() # Use simple timestamp or isoformat
+                }
                 
                 # Step 5: Vectorization with Late Chunking
-                # Chunk the document (simple chunking for now)
-                chunks = ProcessingPipeline._chunk_document(cleaned['cleaned_text'])
+                # Chunk the document
+                chunks_text = ProcessingPipeline._chunk_document(cleaned['cleaned_text'])
                 
-                # Prepare chunk metadata
+                # Prepare chunk metadata for ChromaDB
+                # Use string ID for document_id since it's embedded
+                doc_id_str = submission_id 
+                
                 chunk_metadata = [
                     {
-                        'document_id': db_document.id,
+                        'document_id': doc_id_str, # Using submission ID as doc ID proxy since 1:1
                         'submission_id': submission_id,
                         'chunk_index': i,
-                        'page_number': 1,  # TODO: Calculate actual page number
+                        'page_number': 1,
                         'section_title': '',
                         'clause_number': '',
                         'filename': file_data['name']
                     }
-                    for i in range(len(chunks))
+                    for i in range(len(chunks_text))
                 ]
                 
-                # Generate embeddings with Late Chunking
+                # Generate embeddings
                 embeddings = embedding_service.embed_chunks_with_context(
                     full_document=cleaned['cleaned_text'],
-                    chunks=chunks,
+                    chunks=chunks_text,
                     chunk_metadata=chunk_metadata
                 )
                 
                 # Store in ChromaDB
                 chunk_ids = vector_store.add_document_chunks(
-                    chunks=chunks,
+                    chunks=chunks_text,
                     embeddings=[emb[0] for emb in embeddings],
                     metadata_list=[emb[1] for emb in embeddings]
                 )
                 
-                # Create chunk records in database
-                for i, (chunk, embedding_data, chunk_id) in enumerate(zip(chunks, embeddings, chunk_ids)):
-                    db_chunk = Chunk(
-                        document_id=db_document.id,
-                        chunk_index=i,
-                        content=chunk,
-                        page_number=chunk_metadata[i]['page_number'],
-                        section_title=chunk_metadata[i].get('section_title'),
-                        clause_number=chunk_metadata[i].get('clause_number'),
-                        embedding_id=chunk_id
-                    )
-                    db.add(db_chunk)
+                # Create chunk objects for Mongo
+                mongo_chunks = []
+                for i, (chunk_txt, embedding_data, chunk_id) in enumerate(zip(chunks_text, embeddings, chunk_ids)):
+                    mongo_chunks.append({
+                        "chunk_index": i,
+                        "content": chunk_txt,
+                        "page_number": chunk_metadata[i]['page_number'],
+                        "section_title": chunk_metadata[i].get('section_title'),
+                        "clause_number": chunk_metadata[i].get('clause_number'),
+                        "embedding_id": chunk_id
+                    })
+                
+                doc_update["document.chunks"] = mongo_chunks
+                
+                # Perform the update
+                await db.submissions.update_one(
+                    {"_id": ObjectId(submission_id)},
+                    {"$set": doc_update}
+                )
             
-            # Update submission status
-            submission.status = "REVIEWED"
-            await db.commit()
+            # Final status update
+            await db.submissions.update_one(
+                {"_id": ObjectId(submission_id)},
+                {"$set": {"status": "REVIEWED"}}
+            )
             
         except Exception as e:
             print(f"Error processing submission {submission_id}: {str(e)}")
-            submission.status = "NEW"  # Reset on error
-            await db.commit()
+            await db.submissions.update_one(
+                {"_id": ObjectId(submission_id)},
+                {"$set": {"status": "NEW"}}
+            )
+            import traceback
+            traceback.print_exc()
             raise
     
     @staticmethod
     def _chunk_document(text: str, chunk_size: int = 1000, overlap: int = 200) -> List[str]:
         """Chunk document into smaller pieces."""
         chunks = []
+        if not text:
+            return []
+            
         start = 0
-        
         while start < len(text):
             end = start + chunk_size
             chunk = text[start:end]
@@ -155,4 +148,3 @@ class ProcessingPipeline:
 
 # Global instance
 processing_pipeline = ProcessingPipeline()
-

@@ -33,6 +33,9 @@ async def startup_event():
     
     try:
         await init_db()
+        # Initialize MongoDB
+        from backend.database.mongo import MongoDB
+        await MongoDB.connect_db()
         print("✓ Database initialized")
     except Exception as e:
         print(f"⚠️ Database initialization error: {e}")

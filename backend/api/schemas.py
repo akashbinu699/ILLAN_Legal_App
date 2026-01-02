@@ -1,6 +1,6 @@
 """Pydantic schemas for API requests and responses."""
 from pydantic import BaseModel, EmailStr
-from typing import List, Optional
+from typing import List, Optional, Union
 from datetime import datetime
 
 # Submission Schemas
@@ -16,7 +16,7 @@ class SubmissionCreate(BaseModel):
     files: List[AttachedFileSchema]
 
 class SubmissionResponse(BaseModel):
-    id: int
+    id: str # Changed Int to Str for MongoDB
     case_id: str
     email: str
     phone: str
@@ -38,17 +38,17 @@ class QueryRequest(BaseModel):
     case_id: Optional[str] = None  # Optional: filter by specific case
 
 class Citation(BaseModel):
-    document_id: int
-    page_number: int
+    document_id: Union[int, str]
+    page_number: Union[int, str]
     section_title: Optional[str] = None
     clause_number: Optional[str] = None
-    chunk_id: int
+    chunk_id: Union[int, str]
 
 class QueryResponse(BaseModel):
     response: str
     citations: List[Citation]
     retrieved_chunks: int
-    query_id: int
+    query_id: str # Changed Int to Str
 
 # Case Schemas
 class PrestationSchema(BaseModel):
@@ -56,7 +56,7 @@ class PrestationSchema(BaseModel):
     isAccepted: bool
 
 class CaseResponse(BaseModel):
-    id: int
+    id: str # Changed Int to Str
     case_id: str
     cas_number: Optional[int] = None
     email: str
@@ -84,13 +84,13 @@ class CaseUpdate(BaseModel):
     status: Optional[str] = None
 
 class QueryHistoryResponse(BaseModel):
-    id: int
+    id: str # Changed Int to Str
     query_text: str
     response_text: str
     citations: List[Citation]
     retrieved_chunk_ids: Optional[List] = None
-    submission_id: Optional[int] = None  # Backward compatibility
-    submission_ids: Optional[List[int]] = None  # All submission IDs for email-scoped queries
+    submission_id: Optional[str] = None  # Changed Int to Str
+    submission_ids: Optional[List[str]] = None  # Changed Int to Str
     created_at: datetime
     
     class Config:
@@ -121,4 +121,3 @@ class EmailGroupResponse(BaseModel):
     cas_number: Optional[int] = None
     cas_display_name: Optional[str] = None  # Format: CAS-{number}_{email}
     cases: List[CaseResponse]
-

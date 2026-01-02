@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     
     # Database
     database_path: str = "./data/database.db"
+    mongodb_url: str = "mongodb://localhost:27017" # Default to local mongo
     
     # ChromaDB
     chroma_db_path: str = "./data/chroma_db"
@@ -46,7 +47,17 @@ class Settings(BaseSettings):
         "http://localhost:3001",
         "http://127.0.0.1:3001",
         "http://192.168.1.127:3001",
-        "http://192.168.1.127:3000"
+        "http://192.168.1.127:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1:5173",
+        "http://localhost:5174",
+        "http://127.0.0.1:5174",
+        "http://localhost:5175",
+        "http://127.0.0.1:5175",
+        "http://localhost:5176",
+        "http://127.0.0.1:5176",
+        "http://localhost:5177",
+        "http://127.0.0.1:5177"
     ]
     
     class Config:
