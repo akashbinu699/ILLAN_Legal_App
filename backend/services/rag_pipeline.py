@@ -51,13 +51,14 @@ class RAGPipeline:
         
         return workflow.compile()
     
-    def _retrieval_node(self, state: RAGState) -> RAGState:
+    async def _retrieval_node(self, state: RAGState) -> RAGState:
         """Retrieval node: Execute hybrid search + re-ranking."""
         query = state["query"]
         filter_metadata = state.get("filter_metadata")
         submission_ids = state.get("submission_ids")
         
         # Retrieve relevant chunks with optional filter
+        # retrieval_service.retrieve is currently sync, but we call it here
         chunks = retrieval_service.retrieve(
             query=query,
             n_results=10,
@@ -71,13 +72,13 @@ class RAGPipeline:
             "retrieved_chunks": chunks
         }
     
-    def _drafting_node(self, state: RAGState) -> RAGState:
+    async def _drafting_node(self, state: RAGState) -> RAGState:
         """Drafting node: LLM generates answer with citations."""
         query = state["query"]
         chunks = state["retrieved_chunks"]
         
         # Generate answer with citations
-        result = llm_service.generate_with_citations(
+        result = await llm_service.generate_with_citations(
             query=query,
             retrieved_chunks=chunks,
             require_citations=True
@@ -89,7 +90,7 @@ class RAGPipeline:
             "citations": result["citations"]
         }
     
-    def _critique_node(self, state: RAGState) -> RAGState:
+    async def _critique_node(self, state: RAGState) -> RAGState:
         """Critique node: Second LLM pass validates the answer."""
         query = state["query"]
         draft_answer = state["draft_answer"]
@@ -112,7 +113,7 @@ Please critique this answer. Check:
 
 Provide your critique. If the answer is good, say "ACCEPT". If there are issues, say "REVISE" and explain why."""
 
-        critique = llm_service.generate(critique_prompt, max_tokens=500, temperature=0.3)
+        critique = await llm_service.generate(critique_prompt, max_tokens=500, temperature=0.3)
         
         return {
             **state,
@@ -134,13 +135,13 @@ Provide your critique. If the answer is good, say "ACCEPT". If there are issues,
         
         return "accept"
     
-    def _revision_node(self, state: RAGState) -> RAGState:
+    async def _revision_node(self, state: RAGState) -> RAGState:
         """Revision node: Update query and increment revision count."""
         query = state["query"]
         critique = state["critique"]
         revision_count = state.get("revision_count", 0)
-        filter_metadata = state.get("filter_metadata")  # Preserve filter
-        submission_ids = state.get("submission_ids")  # Preserve submission_ids
+        filter_metadata = state.get("filter_metadata")
+        submission_ids = state.get("submission_ids")
         
         # Refine query based on critique
         revision_prompt = f"""Based on this critique, refine the search query to get better results:
@@ -150,21 +151,21 @@ Critique: {critique}
 
 Provide a refined, more specific query that addresses the issues mentioned."""
 
-        refined_query = llm_service.generate(revision_prompt, max_tokens=200, temperature=0.5)
+        refined_query = await llm_service.generate(revision_prompt, max_tokens=200, temperature=0.5)
         
         return {
             **state,
             "query": refined_query.strip(),
-            "filter_metadata": filter_metadata,  # Preserve filter for next retrieval
-            "submission_ids": submission_ids,  # Preserve submission_ids for next retrieval
+            "filter_metadata": filter_metadata,
+            "submission_ids": submission_ids,
             "revision_count": revision_count + 1,
-            "retrieved_chunks": [],  # Clear for new retrieval
-            "draft_answer": "",  # Clear for new draft
-            "critique": ""  # Clear critique
+            "retrieved_chunks": [],
+            "draft_answer": "",
+            "critique": ""
         }
     
-    def run(self, query: str, filter_metadata: Optional[Dict] = None, submission_ids: Optional[List[int]] = None) -> Dict:
-        """Run the RAG pipeline with optional filter metadata and submission_ids for email-scoped queries."""
+    async def run(self, query: str, filter_metadata: Optional[Dict] = None, submission_ids: Optional[List[int]] = None) -> Dict:
+        """Run the RAG pipeline with optional filter metadata and submission_ids."""
         initial_state: RAGState = {
             "query": query,
             "filter_metadata": filter_metadata,
@@ -177,8 +178,8 @@ Provide a refined, more specific query that addresses the issues mentioned."""
             "final_answer": ""
         }
         
-        # Execute graph
-        final_state = self.graph.invoke(initial_state)
+        # Execute graph (using ainvoke for async graph)
+        final_state = await self.graph.ainvoke(initial_state)
         
         # Extract final answer
         final_answer = final_state.get("draft_answer", "")

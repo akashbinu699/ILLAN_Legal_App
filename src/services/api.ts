@@ -92,6 +92,17 @@ export const api = {
             throw new Error(error.detail || 'Submission failed');
         }
         return response.json();
+    },
+
+    async syncGmail(caseId: string) {
+        const response = await fetch(`${API_BASE_URL}/sync-gmail-case/${caseId}`, {
+            method: 'POST',
+        });
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Sync failed');
+        }
+        return response.json();
     }
 };
 

@@ -56,3 +56,23 @@ chroma_db/
 # Misc
 *.pem
 .cache/
+
+# Test/Debug Scripts
+# Keep demo_pipeline.py and run_app.ps1
+check_db.py
+check_global_sync.py
+debug_gmail_q.py
+debug_gmail_search.py
+debug_sync.py
+list_recent_cas.py
+quick_sync_check.py
+test_full_flow.py
+test_gmail.py
+test_sync_db.py
+verify_email_sent.py
+verify_final.py
+verify_global_sync.py
+verify_legal_sync.py
+
+# Temp outputs
+*.txt

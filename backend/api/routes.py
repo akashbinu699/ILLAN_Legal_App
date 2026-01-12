@@ -16,13 +16,16 @@ from backend.api.schemas import (
     GenerateDraftResponse,
     StageDetectionRequest,
     StageDetectionResponse,
-    EmailGroupResponse
+    EmailGroupResponse,
+    PrestationSchema
 )
 from datetime import datetime
 from collections import defaultdict
 import json
 import base64
 from bson import ObjectId
+from backend.services.gmail_service import gmail_service
+from backend.config import settings
 
 router = APIRouter()
 
@@ -43,65 +46,30 @@ async def submit_case(
     submission: SubmissionCreate,
     db = Depends(get_db)
 ):
-    """Receive form submission from frontend."""
+    """
+    Receive form submission from frontend.
+    Step 1: Skip direct saving to DB.
+    Step 2: Send email notification first.
+    The case will be created in the DB when the Gmail sync/webhook occurs.
+    """
     try:
         now = datetime.now()
         case_id = f"CAS_{now.strftime('%d-%m-%y_%H:%M:%S')}"
-        submitted_at = datetime.utcnow()
         
-        # Check if email already has a CAS number
-        existing_sub = await db.submissions.find_one({"email": submission.email})
-        if existing_sub and existing_sub.get("cas_number") is not None:
-            cas_number = existing_sub.get("cas_number")
-        else:
-            # Find max CAS number
-            pipeline = [
-                {"$group": {"_id": None, "max_cas": {"$max": "$cas_number"}}}
-            ]
-            cursor = db.submissions.aggregate(pipeline)
-            result = await cursor.to_list(length=1)
-            max_cas = result[0]["max_cas"] if result and "max_cas" in result[0] else 0
-            cas_number = (max_cas + 1) if max_cas is not None else 1
+        # Trigger Gmail notification immediately
+        # We await here to ensure it is sent successfully as the "primary" action
+        await send_submission_notification(submission, case_id)
         
-        created_submissions = []
-        
-        for file_data in submission.files:
-            # Create one Submission per document
-            db_submission = SubmissionModel(
-                case_id=case_id,
-                cas_number=cas_number,
-                email=submission.email,
-                phone=submission.phone,
-                description=submission.description,
-                submitted_at=submitted_at,
-                status="NEW",
-                stage="RAPO",
-                document=DocumentModel(
-                    filename=file_data.name,
-                    mime_type=file_data.mimeType
-                )
-            )
-            
-            # Insert into MongoDB
-            sub_dict = db_submission.model_dump(by_alias=True, exclude_none=True)
-            result = await db.submissions.insert_one(sub_dict)
-            
-            # Add database ID back
-            db_submission.id = result.inserted_id
-            created_submissions.append(db_submission)
-            
-        # Trigger document processing pipeline
-        asyncio.create_task(process_in_background(submission, created_submissions, db))
-        
+        # Return a response indicating the case is initiated
         return SubmissionResponse(
-            id=str(created_submissions[0].id),
-            case_id=created_submissions[0].case_id,
-            email=created_submissions[0].email,
-            phone=created_submissions[0].phone,
-            description=created_submissions[0].description,
-            submitted_at=created_submissions[0].submitted_at,
-            status=created_submissions[0].status,
-            stage=created_submissions[0].stage
+            id="pending", # ID will be assigned after sync
+            case_id=case_id,
+            email=submission.email,
+            phone=submission.phone,
+            description=submission.description,
+            submitted_at=datetime.utcnow(),
+            status="PENDING_SYNC",
+            stage="NEW"
         )
     except Exception as e:
         print(f"Error in submit_case: {e}")
@@ -121,6 +89,265 @@ async def process_in_background(original_submission, created_submissions, db):
             )
     except Exception as e:
         print(f"Background processing error: {e}")
+
+async def send_submission_notification(submission, case_id):
+    """Send an email notification about a new submission."""
+    try:
+        if not settings.notification_email:
+            print("[GMAIL] No notification_email set in config, skipping notification")
+            return
+
+        subject = f"NEW LEGAL CASE: {case_id} - {submission.email}"
+        body = f"""
+        A new legal case has been submitted via the client interface.
+        
+        CASE ID: {case_id}
+        CLIENT EMAIL: {submission.email}
+        PHONE: {submission.phone}
+        
+        DESCRIPTION:
+        {submission.description}
+        
+        {len(submission.files)} document(s) attached.
+        
+        View more details in the Lawyer Space.
+        """
+        
+        success = gmail_service.send_email_with_attachments(
+            to_email=settings.notification_email,
+            subject=subject,
+            body=body,
+            attachments=[{"name": f.name, "mimeType": f.mimeType, "base64": f.base64} for f in submission.files]
+        )
+        
+        if success:
+            print(f"[GMAIL] Notification sent for {case_id}")
+        else:
+            print(f"[GMAIL] Failed to send notification for {case_id}")
+            
+    except Exception as e:
+        print(f"Error in send_submission_notification: {e}")
+
+@router.post("/sync-gmail-case/{case_id}")
+async def sync_gmail_for_case(case_id: str, db = Depends(get_db)):
+    """
+    Sync Gmail messages containing the case_id.
+    If the case doesn't exist in DB, create it from the email data.
+    Uses Gemini to detect stage and prestations.
+    """
+    try:
+        from backend.services.llm_service import llm_service
+        from backend.services.processing_pipeline import processing_pipeline
+
+        # 1. Search Gmail for this case_id
+        query = f'"{case_id}"'
+        messages = gmail_service.get_messages(query=query, max_results=10)
+        
+        sync_results = []
+        new_case_created_info = None
+        
+        for msg_info in messages:
+            msg = gmail_service.get_message(msg_info['id'])
+            if not msg: continue
+            
+            # Check if we already synced this message
+            existing_query = await db.queries.find_one({"gmail_message_id": msg['id']})
+            if existing_query: continue
+            
+            content = gmail_service.parse_message_content(msg)
+            attachments = gmail_service.extract_attachments(msg)
+            timestamp = datetime.fromtimestamp(int(msg['internalDate'])/1000)
+            
+            # 2. Check if case exists in DB (it might not if this is the first sync after submission)
+            sub = await db.submissions.find_one({"case_id": case_id})
+            
+            if not sub:
+                # CREATE NEW CASE FROM EMAIL DATA
+                print(f"[SYNC] Case {case_id} not found in DB. Reconstructing from email content...")
+                
+                # Parse form data from email body (using the helper in gmail_service)
+                form_data = content.get('form_data', {})
+                email = form_data.get('CLIENT EMAIL', content['from'])
+                phone = form_data.get('PHONE', "")
+                description = form_data.get('DESCRIPTION', content['body'])
+                
+                # Use Gemini to detect stage and type
+                print(f"[SYNC] Calling Gemini to analyze case stage/type...")
+                analysis_prompt = f"""
+                Tu es un expert en droit administratif français. Analyse cette description de dossier :
+                
+                DESCRIPTION: {description}
+                
+                Détermine :
+                1. L'étape du dossier (CONTROL, RAPO, ou LITIGATION).
+                2. Les types de prestations sociales concernées (ex: RSA, APL, Prime d'activité, etc.).
+                
+                Réponds UNIQUEMENT au format JSON comme ceci :
+                {{"stage": "STAGE_NAME", "prestations": ["P1", "P2"]}}
+                """
+                try:
+                    analysis_raw = await llm_service.generate(analysis_prompt)
+                    print(f"[SYNC] Gemini Raw Response: {analysis_raw}")
+                    # Use regex to find the JSON block in case there is markdown wrapper
+                    import re
+                    match = re.search(r'\{.*\}', analysis_raw, re.DOTALL)
+                    if match:
+                        analysis = json.loads(match.group())
+                        detected_stage = analysis.get("stage", "RAPO")
+                        detected_prestations = analysis.get("prestations", [])
+                    else:
+                        detected_stage = "RAPO"
+                        detected_prestations = []
+                except Exception as ex:
+                    print(f"[SYNC] Gemini analysis failed: {ex}")
+                    detected_stage = "RAPO"
+                    detected_prestations = []
+
+                # Determine CAS number (incrementing)
+                pipeline = [{"$group": {"_id": None, "max_cas": {"$max": "$cas_number"}}}]
+                cursor = db.submissions.aggregate(pipeline)
+                res = await cursor.to_list(length=1)
+                max_cas = res[0]["max_cas"] if res and "max_cas" in res[0] else 0
+                cas_number = (max_cas + 1) if max_cas is not None else 1
+
+                # Create the primary submission record
+                new_sub = SubmissionModel(
+                    case_id=case_id,
+                    cas_number=cas_number,
+                    email=email,
+                    phone=phone,
+                    description=description,
+                    submitted_at=timestamp,
+                    status="NEW",
+                    stage=detected_stage,
+                    document=DocumentModel(filename="Email Body", mime_type="text/plain")
+                )
+                ns_dict = new_sub.model_dump(by_alias=True, exclude_none=True)
+                # Store detected prestations (as a simple list for metadata)
+                ns_dict["prestations_detected"] = detected_prestations
+                
+                insertion_result = await db.submissions.insert_one(ns_dict)
+                sub_id = str(insertion_result.inserted_id)
+                new_case_created_info = {"id": sub_id, "cas_number": cas_number}
+                print(f"[SYNC] Successfully created new case {case_id} in DB.")
+                
+                # Fetch the newly created sub to use its data for attachments
+                sub = ns_dict 
+                sub["_id"] = insertion_result.inserted_id
+            else:
+                sub_id = str(sub["_id"])
+
+            # 3. Store the email as a Query/Interaction record
+            email_query = QueryModel(
+                submission_id=sub_id,
+                submission_ids=[sub_id],
+                query_text=f"EMAIL: {content['subject']}",
+                response_text=content['body'],
+                created_at=timestamp
+            )
+            q_dict = email_query.model_dump(by_alias=True, exclude_none=True)
+            q_dict["gmail_message_id"] = msg['id']
+            q_dict["is_email"] = True
+            q_dict["from_email"] = content['from']
+            await db.queries.insert_one(q_dict)
+            
+            sync_results.append({
+                "id": msg['id'],
+                "subject": content['subject'],
+                "from": content['from'],
+                "date": content['date']
+            })
+            
+            # 4. Process attachments as individual sub-submissions for this case
+            if attachments:
+                for att in attachments:
+                    att_sub_doc = SubmissionModel(
+                        case_id=case_id,
+                        cas_number=sub["cas_number"],
+                        email=content['from'],
+                        phone="",
+                        description=f"Gmail Attachment: {att['filename']} (from {content['subject']})",
+                        submitted_at=timestamp,
+                        status="NEW",
+                        stage=sub.get("stage", "RAPO"),
+                        document=DocumentModel(filename=att['filename'], mime_type=att['mime_type'])
+                    )
+                    as_dict = att_sub_doc.model_dump(by_alias=True, exclude_none=True)
+                    as_res = await db.submissions.insert_one(as_dict)
+                    
+                    # Trigger processing for the attachment content
+                    asyncio.create_task(processing_pipeline.process_submission(
+                        str(as_res.inserted_id),
+                        [{"name": att['filename'], "mimeType": att['mime_type'], "base64": att['base64']}],
+                        db
+                    ))
+        
+        return {
+            "status": "success",
+            "synced_count": len(sync_results),
+            "new_case_created": new_case_created_info is not None,
+            "messages": sync_results
+        }
+    except Exception as e:
+        print(f"Error in sync_gmail_for_case: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/sync-all-gmail")
+async def sync_all_gmail(days: int = 7, db = Depends(get_db)):
+    """
+    Global sync: Search Gmail for all messages containing "CAS_" from the last X days.
+    Processes any message that hasn't been synced yet.
+    """
+    try:
+        # Search for messages with CAS_ prefix (any case ID)
+        # Gmail query uses 'after:YYYY/MM/DD' to limit time range
+        from datetime import datetime, timedelta
+        query = 'subject:"NEW LEGAL CASE"'
+        
+        print(f"[SYNC-ALL] Searching Gmail with query: {query}")
+        messages = gmail_service.get_messages(query=query, max_results=100)
+        
+        processed_count = 0
+        new_cases_count = 0
+        
+        for msg_info in messages:
+            msg_id = msg_info['id']
+            
+            # Skip if already in DB
+            existing = await db.queries.find_one({"gmail_message_id": msg_id})
+            if existing:
+                continue
+            
+            # Fetch full message
+            full_msg = gmail_service.get_message(msg_id)
+            if not full_msg: continue
+            
+            # Extract Case ID from Subject
+            subject = next((h['value'] for h in full_msg['payload']['headers'] if h['name'].lower() == 'subject'), '')
+            import re
+            match = re.search(r'CAS_[\d\-_:]+', subject)
+            
+            if match:
+                case_id = match.group(0)
+                print(f"[SYNC-ALL] Found new email for {case_id}. Processing...")
+                
+                # Use the existing sync logic for this specific case
+                result = await sync_gmail_for_case(case_id, db)
+                processed_count += 1
+                if result.get("new_case_created"):
+                    new_cases_count += 1
+                    
+        return {
+            "status": "success",
+            "total_found": len(messages),
+            "processed": processed_count,
+            "new_cases": new_cases_count
+        }
+    except Exception as e:
+        print(f"Error in sync_all_gmail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/cases", response_model=List[EmailGroupResponse])
 async def get_cases(
@@ -168,7 +395,7 @@ async def get_cases(
                      submitted_at=sub["submitted_at"],
                      status=sub["status"],
                      stage=sub["stage"],
-                     prestations=[],
+                     prestations=[PrestationSchema(name=p, isAccepted=True) for p in (sub.get('prestations_detected') or [])],
                      display_name=display_name,
                      generatedEmailDraft=sub.get("generated_email_draft"),
                      generatedAppealDraft=sub.get("generated_appeal_draft"),
@@ -213,7 +440,7 @@ async def get_case(case_id: str, db = Depends(get_db)):
         submitted_at=sub["submitted_at"],
         status=sub["status"],
         stage=sub["stage"],
-        prestations=[],
+        prestations=[PrestationSchema(name=p, isAccepted=True) for p in (sub.get('prestations_detected') or [])],
         display_name=display_name,
         generatedEmailDraft=sub.get("generated_email_draft"),
         generatedAppealDraft=sub.get("generated_appeal_draft"),
@@ -259,7 +486,7 @@ async def update_case(case_id: str, update: CaseUpdate, db = Depends(get_db)):
         submitted_at=sub["submitted_at"],
         status=sub["status"],
         stage=sub["stage"],
-        prestations=[],
+        prestations=[PrestationSchema(name=p, isAccepted=True) for p in (sub.get('prestations_detected') or [])],
         display_name=display_name,
         generatedEmailDraft=sub.get("generated_email_draft"),
         generatedAppealDraft=sub.get("generated_appeal_draft"),
@@ -313,7 +540,7 @@ async def generate_drafts(case_id: str, db = Depends(get_db)):
         submitted_at=sub["submitted_at"],
         status=sub["status"],
         stage=sub["stage"],
-        prestations=[],
+        prestations=[PrestationSchema(name=p, isAccepted=True) for p in (sub.get('prestations_detected') or [])],
         display_name=display_name,
         generatedEmailDraft=sub.get("generated_email_draft"),
         generatedAppealDraft=sub.get("generated_appeal_draft"),
@@ -358,7 +585,7 @@ async def query_rag(query: QueryRequest, db = Depends(get_db)):
             all_subs = await cursor.to_list(length=1000)
             submission_ids = [str(s["_id"]) for s in all_subs] # Use ObjectIds as strings
             
-    result = rag_pipeline.run(query.query, filter_metadata=None, submission_ids=submission_ids)
+    result = await rag_pipeline.run(query.query, filter_metadata=None, submission_ids=submission_ids)
     
     # Save query
     query_doc = QueryModel(
@@ -414,22 +641,43 @@ async def get_case_queries(case_id: str, db = Depends(get_db)):
 
 @router.post("/detect-stage", response_model=StageDetectionResponse)
 async def detect_stage(request: StageDetectionRequest):
+    """Detect the stage and type of case using Gemini analysis."""
     try:
         from backend.services.llm_service import llm_service
-        KNOWLEDGE_BASE = "THEME,RENSEIGNEMENTS\n..." # Simplified for brevity, user has full content in original
-        prompt = f"CONTEXTE:\nTu es avocat spécialisé...\nDESCRIPTION: {request.description}\n..."
         
-        # In a real migration I would copy the full prompt. 
-        # For this turn I will assume the prompt logic is generic enough or I'd need to copy it fully if I want it to work 100%.
-        # Given the file size limitation, I will keep it functional.
+        prompt = f"""
+        Tu es un expert en droit administratif français. Analyse cette description de dossier :
         
-        # Use a simplified prompt for now to ensure it works
-        response_text = await llm_service.generate(f"Analyze this legal case description and identify the stage (CONTROL, RAPO, LITIGATION) and prestations. Return JSON. Description: {request.description}")
+        DESCRIPTION: {request.description}
         
-        # Mock logic if LLM fails or simplified
+        Détermine :
+        1. L'étape du dossier (CONTROL, RAPO, ou LITIGATION).
+        2. Les types de prestations sociales concernées (ex: RSA, APL, Prime d'activité, etc.).
+        
+        Réponds UNIQUEMENT au format JSON comme ceci :
+        {{"stage": "STAGE_NAME", "prestations": ["P1", "P2"]}}
+        """
+        
+        analysis_raw = await llm_service.generate(prompt)
+        
+        # Parse JSON from response
+        import re
+        match = re.search(r'\{.*\}', analysis_raw, re.DOTALL)
+        if match:
+            analysis = json.loads(match.group())
+            stage = analysis.get("stage", "RAPO")
+            prestations_list = analysis.get("prestations", [])
+            
+            # Convert simple strings to PrestationSchema objects
+            prestations = [PrestationSchema(name=p, isAccepted=True) for p in prestations_list]
+        else:
+            stage = "RAPO"
+            prestations = []
+            
         return StageDetectionResponse(
-            stage="RAPO",
-            prestations=[{"name": "RSA", "isAccepted": True}]
+            stage=stage,
+            prestations=prestations
         )
     except Exception as e:
+        print(f"Error in detect_stage: {e}")
         raise HTTPException(status_code=500, detail=str(e))

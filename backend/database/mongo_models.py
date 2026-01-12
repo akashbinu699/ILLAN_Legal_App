@@ -34,7 +34,7 @@ class DocumentModel(MongoBaseModel):
     chunks: List[ChunkModel] = []
 
 class SubmissionModel(MongoBaseModel):
-    id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
+    id: Optional[PyObjectId] = Field(default=None, alias="_id")
     case_id: str
     cas_number: Optional[int] = None
     email: str
@@ -54,7 +54,7 @@ class SubmissionModel(MongoBaseModel):
     document: Optional[DocumentModel] = None
 
 class QueryModel(MongoBaseModel):
-    id: Optional[PyObjectId] = Field(default_factory=PyObjectId, alias="_id")
+    id: Optional[PyObjectId] = Field(default=None, alias="_id")
     submission_id: Optional[str] = None # Reference to primary submission ID
     submission_ids: Optional[List[str]] = None
     query_text: str

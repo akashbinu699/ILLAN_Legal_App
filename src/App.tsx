@@ -29,6 +29,7 @@ function App() {
   const [cases, setCases] = useState<Case[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [syncLoading, setSyncLoading] = useState(false);
 
   // Fetch cases on mount
   useEffect(() => {
@@ -111,6 +112,25 @@ function App() {
       c.id === selectedCaseId ? { ...c, description: desc } : c
     ));
     // TODO: persist description change to backend
+  };
+
+  const handleSyncGmail = async () => {
+    if (!selectedCaseId) return;
+    try {
+      setSyncLoading(true);
+      const result = await api.syncGmail(selectedCaseId);
+      alert(`Sync completed! ${result.synced_count} new messages found.`);
+      // Refresh cases if messages were synced
+      if (result.synced_count > 0) {
+        const data = await api.getCases();
+        setCases(data);
+      }
+    } catch (err) {
+      console.error("Sync failed", err);
+      alert("Gmail Sync failed. Please check your credentials.");
+    } finally {
+      setSyncLoading(false);
+    }
   };
 
   const handleClientSubmit = async (data: any) => {
@@ -320,6 +340,8 @@ Je me permets de vous contacter afin de contester.
               onViewChange={setViewMode}
               onCaseStageChange={handleUpdateCaseStage}
               onFeedbackToggle={handleFeedbackToggle}
+              onSyncGmail={handleSyncGmail}
+              syncLoading={syncLoading}
             />
 
             <div className="flex-1 overflow-hidden relative bg-white">

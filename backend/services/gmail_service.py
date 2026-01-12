@@ -28,8 +28,11 @@ class GmailService:
     def authenticate(self) -> bool:
         """Authenticate with Gmail API using OAuth2."""
         creds = None
-        token_path = 'backend/token.json'
-        credentials_path = 'backend/credentials.json'
+        
+        # Use absolute paths relative to project root
+        from backend.config import PROJECT_ROOT
+        token_path = os.path.join(PROJECT_ROOT, 'backend', 'token.json')
+        credentials_path = os.path.join(PROJECT_ROOT, 'backend', 'credentials.json')
         
         # Load existing token
         if os.path.exists(token_path):
@@ -145,10 +148,10 @@ class GmailService:
         payload = message.get('payload', {})
         headers = payload.get('headers', [])
         
-        # Extract headers
-        subject = next((h['value'] for h in headers if h['name'] == 'Subject'), '')
-        from_email = next((h['value'] for h in headers if h['name'] == 'From'), '')
-        date = next((h['value'] for h in headers if h['name'] == 'Date'), '')
+        # Extract headers (case-insensitive)
+        subject = next((h['value'] for h in headers if h['name'].lower() == 'subject'), '')
+        from_email = next((h['value'] for h in headers if h['name'].lower() == 'from'), '')
+        date = next((h['value'] for h in headers if h['name'].lower() == 'date'), '')
         
         # Extract body
         body_text = self._extract_body_text(payload)
@@ -196,13 +199,21 @@ class GmailService:
             except:
                 pass
         
-        # Otherwise, try to extract key-value pairs
+        # Otherwise, extract key-value pairs, handling multi-line descriptions
         form_data = {}
-        lines = body_text.split('\n')
-        for line in lines:
-            if ':' in line:
-                key, value = line.split(':', 1)
-                form_data[key.strip()] = value.strip()
+        
+        # Standard fields
+        patterns = {
+            'CASE ID': r'CASE ID:\s*(CAS_[\d\-_:]+)',
+            'CLIENT EMAIL': r'CLIENT EMAIL:\s*([^\n\r]+)',
+            'PHONE': r'PHONE:\s*([^\n\r]*)',
+            'DESCRIPTION': r'DESCRIPTION:\s*(.*?)(?=\s*\n\s*\d+\s*document\(s\) attached|$)'
+        }
+        
+        for key, pattern in patterns.items():
+            match = re.search(pattern, body_text, re.DOTALL | re.IGNORECASE)
+            if match:
+                form_data[key] = match.group(1).strip()
         
         return form_data
     

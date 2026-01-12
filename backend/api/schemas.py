@@ -84,13 +84,15 @@ class CaseUpdate(BaseModel):
     status: Optional[str] = None
 
 class QueryHistoryResponse(BaseModel):
-    id: str # Changed Int to Str
+    id: str
     query_text: str
     response_text: str
-    citations: List[Citation]
+    citations: Optional[List[Citation]] = None
     retrieved_chunk_ids: Optional[List] = None
-    submission_id: Optional[str] = None  # Changed Int to Str
-    submission_ids: Optional[List[str]] = None  # Changed Int to Str
+    submission_id: Optional[str] = None
+    submission_ids: Optional[List[str]] = None
+    is_email: bool = False
+    from_email: Optional[str] = None
     created_at: datetime
     
     class Config:
@@ -108,9 +110,6 @@ class StageDetectionRequest(BaseModel):
     description: str
     files: List[AttachedFileSchema] = []
 
-class PrestationSchema(BaseModel):
-    name: str
-    isAccepted: bool
 
 class StageDetectionResponse(BaseModel):
     stage: str
