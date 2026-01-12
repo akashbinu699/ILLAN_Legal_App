@@ -106,6 +106,73 @@ class GmailService:
         except HttpError as error:
             print(f'An error occurred: {error}')
             return None
+            
+    def ensure_label_exists(self, label_name: str) -> str:
+        """Check if label exists by name, create it if it doesn't. Returns label ID."""
+        if not self.service:
+            self.authenticate()
+        try:
+            results = self.service.users().labels().list(userId='me').execute()
+            labels = results.get('labels', [])
+            
+            for label in labels:
+                if label['name'].lower() == label_name.lower():
+                    return label['id']
+            
+            # Create label
+            label_object = {
+                'name': label_name,
+                'labelListVisibility': 'labelShow',
+                'messageListVisibility': 'show'
+            }
+            created_label = self.service.users().labels().create(userId='me', body=label_object).execute()
+            print(f"[GMAIL] Created new label: {label_name}")
+            return created_label['id']
+        except Exception as e:
+            print(f"[GMAIL] Error ensuring label exists: {e}")
+            return ""
+
+    def add_label_to_message(self, msg_id: str, label_name: str):
+        """Add a label to a specific message."""
+        if not self.service:
+            self.authenticate()
+        try:
+            label_id = self.ensure_label_exists(label_name)
+            if not label_id: return
+            
+            self.service.users().messages().batchModify(
+                userId='me',
+                body={
+                    'ids': [msg_id],
+                    'addLabelIds': [label_id]
+                }
+            ).execute()
+            print(f"[GMAIL] Applied label '{label_name}' to message {msg_id}")
+        except Exception as e:
+            print(f"[GMAIL] Error adding label to message: {e}")
+
+    def remove_label_from_message(self, msg_id: str, label_name: str):
+        """Remove a label from a specific message."""
+        if not self.service:
+            self.authenticate()
+        try:
+            # Need to find ID for the name
+            results = self.service.users().labels().list(userId='me').execute()
+            labels = results.get('labels', [])
+            label_id = next((l['id'] for l in labels if l['name'].lower() == label_name.lower()), None)
+            
+            if not label_id: return
+            
+            self.service.users().messages().batchModify(
+                userId='me',
+                body={
+                    'ids': [msg_id],
+                    'removeLabelIds': [label_id]
+                }
+            ).execute()
+            print(f"[GMAIL] Removed label '{label_name}' from message {msg_id}")
+        except Exception as e:
+            print(f"[GMAIL] Error removing label: {e}")
     
     def extract_attachments(self, message: Dict) -> List[Dict]:
         """Extract attachments from message."""

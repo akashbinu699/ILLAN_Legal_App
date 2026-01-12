@@ -17,7 +17,8 @@ from backend.api.schemas import (
     StageDetectionRequest,
     StageDetectionResponse,
     EmailGroupResponse,
-    PrestationSchema
+    PrestationSchema,
+    DocumentSchema
 )
 from datetime import datetime
 from collections import defaultdict
@@ -139,8 +140,8 @@ async def sync_gmail_for_case(case_id: str, db = Depends(get_db)):
         from backend.services.llm_service import llm_service
         from backend.services.processing_pipeline import processing_pipeline
 
-        # 1. Search Gmail for this case_id
-        query = f'"{case_id}"'
+        # 1. Search Gmail for this case_id (Excluding already processed emails via label)
+        query = f'"{case_id}" -label:ILAN_PROCESSED'
         messages = gmail_service.get_messages(query=query, max_results=10)
         
         sync_results = []
@@ -164,123 +165,166 @@ async def sync_gmail_for_case(case_id: str, db = Depends(get_db)):
             if not sub:
                 # CREATE NEW CASE FROM EMAIL DATA
                 print(f"[SYNC] Case {case_id} not found in DB. Reconstructing from email content...")
+            else:
+                # Case already exists, just mark this message as processed so we don't check it again
+                print(f"[SYNC] Case {case_id} already exists in DB. Skipping and labeling message...")
+                gmail_service.add_label_to_message(msg['id'], "ILAN_PROCESSED")
+                continue
                 
-                # Parse form data from email body (using the helper in gmail_service)
-                form_data = content.get('form_data', {})
-                email = form_data.get('CLIENT EMAIL', content['from'])
-                phone = form_data.get('PHONE', "")
-                description = form_data.get('DESCRIPTION', content['body'])
+            # Parse form data from email body
+            form_data = content.get('form_data', {})
+            sender = content['from'] or ""
                 
-                # Use Gemini to detect stage and type
-                print(f"[SYNC] Calling Gemini to analyze case stage/type...")
-                analysis_prompt = f"""
-                Tu es un expert en droit administratif français. Analyse cette description de dossier :
+            print(f"[SYNC DEBUG] Processing Msg {msg['id']} | Sender: {sender}")
+            
+            # 1. Try to get Client Email from Body (Highest Priority)
+            email = form_data.get('CLIENT EMAIL')
+            
+            # 2. If no Client Email in body, consider using Sender
+            if not email:
+                # Only use sender if it is NOT us (the lawyer)
+                is_lawyer = False
+                if settings.notification_email and settings.notification_email.lower() in sender.lower():
+                    is_lawyer = True
+                if "secretairebvavocat" in sender.lower():
+                    is_lawyer = True
                 
-                DESCRIPTION: {description}
+                if not is_lawyer:
+                    email = sender
+                else:
+                    print(f"[SYNC] Skipping message {msg['id']} - Sender is Lawyer and no CLIENT EMAIL in body.")
+                    continue
+
+            # 3. Final Safety Check on the resulting email
+            if email:
+                is_bad = False
+                if "secretairebvavocat" in email.lower(): is_bad = True
+                if settings.notification_email and settings.notification_email.lower() in email.lower(): is_bad = True
                 
-                Détermine :
-                1. L'étape du dossier (CONTROL, RAPO, ou LITIGATION).
-                2. Les types de prestations sociales concernées (ex: RSA, APL, Prime d'activité, etc.).
+                if is_bad:
+                    print(f"[SYNC] FAILSAFE: Rejecting case with lawyer email: {email}")
+                    # Even if bad, mark it as PROCESSED in Gmail so we don't try again
+                    gmail_service.add_label_to_message(msg['id'], "ILAN_PROCESSED")
+                    continue
+            
+            if not email:
+                print(f"[SYNC] Skipping message {msg['id']} - Resolved email is empty")
+                continue
+
+            phone = form_data.get('PHONE', "")
+            description = form_data.get('DESCRIPTION', content['body'])
                 
-                Réponds UNIQUEMENT au format JSON comme ceci :
-                {{"stage": "STAGE_NAME", "prestations": ["P1", "P2"]}}
-                """
-                try:
-                    analysis_raw = await llm_service.generate(analysis_prompt)
-                    print(f"[SYNC] Gemini Raw Response: {analysis_raw}")
-                    # Use regex to find the JSON block in case there is markdown wrapper
-                    import re
-                    match = re.search(r'\{.*\}', analysis_raw, re.DOTALL)
-                    if match:
-                        analysis = json.loads(match.group())
-                        detected_stage = analysis.get("stage", "RAPO")
-                        detected_prestations = analysis.get("prestations", [])
-                    else:
-                        detected_stage = "RAPO"
-                        detected_prestations = []
-                except Exception as ex:
-                    print(f"[SYNC] Gemini analysis failed: {ex}")
+            # Use Gemini to detect stage and type
+            print(f"[SYNC] Calling Gemini to analyze case stage/type...")
+            analysis_prompt = f"""
+            Tu es un expert en droit administratif français. Analyse cette description de dossier :
+            
+            DESCRIPTION: {description}
+            
+            Détermine :
+            1. L'étape du dossier (CONTROL, RAPO, ou LITIGATION).
+            2. Les types de prestations sociales concernées (ex: RSA, APL, Prime d'activité, etc.).
+            
+            Réponds UNIQUEMENT au format JSON comme ceci :
+            {{"stage": "STAGE_NAME", "prestations": ["P1", "P2"]}}
+            """
+            try:
+                analysis_raw = await llm_service.generate(analysis_prompt)
+                print(f"[SYNC] Gemini Raw Response: {analysis_raw}")
+                # Use regex to find the JSON block in case there is markdown wrapper
+                import re
+                match = re.search(r'\{.*\}', analysis_raw, re.DOTALL)
+                if match:
+                    analysis = json.loads(match.group())
+                    detected_stage = analysis.get("stage", "RAPO")
+                    detected_prestations = analysis.get("prestations", [])
+                else:
                     detected_stage = "RAPO"
                     detected_prestations = []
+            except Exception as ex:
+                print(f"[SYNC] Gemini analysis failed: {ex}")
+                detected_stage = "RAPO"
+                detected_prestations = []
 
-                # Determine CAS number (incrementing)
-                pipeline = [{"$group": {"_id": None, "max_cas": {"$max": "$cas_number"}}}]
-                cursor = db.submissions.aggregate(pipeline)
-                res = await cursor.to_list(length=1)
-                max_cas = res[0]["max_cas"] if res and "max_cas" in res[0] else 0
-                cas_number = (max_cas + 1) if max_cas is not None else 1
+            # Determine CAS number (incrementing)
+            pipeline = [{"$group": {"_id": None, "max_cas": {"$max": "$cas_number"}}}]
+            cursor = db.submissions.aggregate(pipeline)
+            res = await cursor.to_list(length=1)
+            max_cas = res[0]["max_cas"] if res and "max_cas" in res[0] else 0
+            cas_number = (max_cas + 1) if max_cas is not None else 1
 
-                # Create the primary submission record
-                new_sub = SubmissionModel(
+            # Create the primary submission record
+            new_sub = SubmissionModel(
+                case_id=case_id,
+                cas_number=cas_number,
+                email=email,
+                phone=phone,
+                description=description,
+                submitted_at=timestamp,
+                status="NEW",
+                stage=detected_stage,
+                document=DocumentModel(filename="Email Body", mime_type="text/plain")
+            )
+            ns_dict = new_sub.model_dump(by_alias=True, exclude_none=True)
+            # Store detected prestations (as a simple list for metadata)
+            ns_dict["prestations_detected"] = detected_prestations
+            
+            insertion_result = await db.submissions.insert_one(ns_dict)
+            sub_id = str(insertion_result.inserted_id)
+            new_case_created_info = {"id": sub_id, "cas_number": cas_number}
+            print(f"[SYNC] Successfully created new case {case_id} in DB.")
+            
+            # Fetch the newly created sub to use its data for attachments
+            sub = ns_dict 
+            sub["_id"] = insertion_result.inserted_id
+
+        # 3. Store the email as a Query/Interaction record
+        email_query = QueryModel(
+            submission_id=sub_id,
+            submission_ids=[sub_id],
+            query_text=f"EMAIL: {content['subject']}",
+            response_text=content['body'],
+            created_at=timestamp
+        )
+        q_dict = email_query.model_dump(by_alias=True, exclude_none=True)
+        q_dict["gmail_message_id"] = msg['id']
+        q_dict["is_email"] = True
+        q_dict["from_email"] = content['from']
+        await db.queries.insert_one(q_dict)
+        
+        sync_results.append({
+            "id": msg['id'],
+            "subject": content['subject'],
+            "from": content['from'],
+            "date": content['date']
+        })
+        
+        # 4. Process attachments as individual sub-submissions for this case
+        if attachments:
+            for att in attachments:
+                att_sub_doc = SubmissionModel(
                     case_id=case_id,
                     cas_number=cas_number,
                     email=email,
                     phone=phone,
-                    description=description,
+                    description=f"Gmail Attachment: {att['filename']} (from {content['subject']})",
                     submitted_at=timestamp,
                     status="NEW",
                     stage=detected_stage,
-                    document=DocumentModel(filename="Email Body", mime_type="text/plain")
+                    document=DocumentModel(filename=att['filename'], mime_type=att['mime_type'])
                 )
-                ns_dict = new_sub.model_dump(by_alias=True, exclude_none=True)
-                # Store detected prestations (as a simple list for metadata)
-                ns_dict["prestations_detected"] = detected_prestations
+                as_dict = att_sub_doc.model_dump(by_alias=True, exclude_none=True)
+                as_res = await db.submissions.insert_one(as_dict)
                 
-                insertion_result = await db.submissions.insert_one(ns_dict)
-                sub_id = str(insertion_result.inserted_id)
-                new_case_created_info = {"id": sub_id, "cas_number": cas_number}
-                print(f"[SYNC] Successfully created new case {case_id} in DB.")
-                
-                # Fetch the newly created sub to use its data for attachments
-                sub = ns_dict 
-                sub["_id"] = insertion_result.inserted_id
-            else:
-                sub_id = str(sub["_id"])
-
-            # 3. Store the email as a Query/Interaction record
-            email_query = QueryModel(
-                submission_id=sub_id,
-                submission_ids=[sub_id],
-                query_text=f"EMAIL: {content['subject']}",
-                response_text=content['body'],
-                created_at=timestamp
-            )
-            q_dict = email_query.model_dump(by_alias=True, exclude_none=True)
-            q_dict["gmail_message_id"] = msg['id']
-            q_dict["is_email"] = True
-            q_dict["from_email"] = content['from']
-            await db.queries.insert_one(q_dict)
-            
-            sync_results.append({
-                "id": msg['id'],
-                "subject": content['subject'],
-                "from": content['from'],
-                "date": content['date']
-            })
-            
-            # 4. Process attachments as individual sub-submissions for this case
-            if attachments:
-                for att in attachments:
-                    att_sub_doc = SubmissionModel(
-                        case_id=case_id,
-                        cas_number=sub["cas_number"],
-                        email=content['from'],
-                        phone="",
-                        description=f"Gmail Attachment: {att['filename']} (from {content['subject']})",
-                        submitted_at=timestamp,
-                        status="NEW",
-                        stage=sub.get("stage", "RAPO"),
-                        document=DocumentModel(filename=att['filename'], mime_type=att['mime_type'])
-                    )
-                    as_dict = att_sub_doc.model_dump(by_alias=True, exclude_none=True)
-                    as_res = await db.submissions.insert_one(as_dict)
-                    
-                    # Trigger processing for the attachment content
-                    asyncio.create_task(processing_pipeline.process_submission(
-                        str(as_res.inserted_id),
-                        [{"name": att['filename'], "mimeType": att['mime_type'], "base64": att['base64']}],
-                        db
-                    ))
+                # Trigger processing for the attachment content
+                asyncio.create_task(processing_pipeline.process_submission(
+                    str(as_res.inserted_id),
+                    [{"name": att['filename'], "mimeType": att['mime_type'], "base64": att['base64']}],
+                    db
+                ))
+        
+        # METHOD 3: Mark as processed in Gmail
+        gmail_service.add_label_to_message(msg['id'], "ILAN_PROCESSED")
         
         return {
             "status": "success",
@@ -304,7 +348,8 @@ async def sync_all_gmail(days: int = 7, db = Depends(get_db)):
         # Search for messages with CAS_ prefix (any case ID)
         # Gmail query uses 'after:YYYY/MM/DD' to limit time range
         from datetime import datetime, timedelta
-        query = 'subject:"NEW LEGAL CASE"'
+        # METHOD 3: Exclude already processed messages
+        query = 'subject:"NEW LEGAL CASE" -label:ILAN_PROCESSED'
         
         print(f"[SYNC-ALL] Searching Gmail with query: {query}")
         messages = gmail_service.get_messages(query=query, max_results=100)
@@ -379,29 +424,41 @@ async def get_cases(
         )
         
         for case_id, case_subs in sorted_case_groups:
-             case_subs_sorted = sorted(case_subs, key=lambda s: str(s.get("_id")))
-             for sub in case_subs_sorted:
-                 date_formatted = format_date_ddmmmyy(sub.get("submitted_at"))
-                 filename = sub.get("document", {}).get("filename", "")
-                 display_name = f"CASE{cas_number}_{email}_{filename}_{date_formatted}" if filename else f"CASE{cas_number}_{email}_{date_formatted}"
-                 
-                 cases_with_numbers.append(CaseResponse(
-                     id=str(sub["_id"]),
-                     case_id=sub["case_id"],
-                     cas_number=cas_number,
-                     email=sub["email"],
-                     phone=sub.get("phone", ""),
-                     description=sub.get("description", ""),
-                     submitted_at=sub["submitted_at"],
-                     status=sub["status"],
-                     stage=sub["stage"],
-                     prestations=[PrestationSchema(name=p, isAccepted=True) for p in (sub.get('prestations_detected') or [])],
-                     display_name=display_name,
-                     generatedEmailDraft=sub.get("generated_email_draft"),
-                     generatedAppealDraft=sub.get("generated_appeal_draft"),
-                     emailPrompt=sub.get("email_prompt"),
-                     appealPrompt=sub.get("appeal_prompt")
-                 ))
+             # Find the "primary" submission (usually the one with the original description)
+             # We prefer the one that has the prestations analytic result or simply no filename
+             primary_sub = next((s for s in case_subs if s.get('prestations_detected')), case_subs[0])
+             
+             # Collect all documents from this case
+             all_documents = []
+             for s in case_subs:
+                 doc = s.get("document")
+                 if doc and doc.get("filename") and doc.get("filename") != "Email Body":
+                     all_documents.append(DocumentSchema(
+                         filename=doc["filename"],
+                         mime_type=doc.get("mime_type", "application/octet-stream")
+                     ))
+             
+             date_formatted = format_date_ddmmmyy(primary_sub.get("submitted_at"))
+             display_name = f"CASE{cas_number}_{email}_{date_formatted}"
+             
+             cases_with_numbers.append(CaseResponse(
+                 id=str(primary_sub["_id"]),
+                 case_id=primary_sub["case_id"],
+                 cas_number=cas_number,
+                 email=primary_sub["email"],
+                 phone=primary_sub.get("phone", ""),
+                 description=primary_sub.get("description", ""),
+                 submitted_at=primary_sub["submitted_at"],
+                 status=primary_sub["status"],
+                 stage=primary_sub["stage"],
+                 prestations=[PrestationSchema(name=p, isAccepted=True) for p in (primary_sub.get('prestations_detected') or [])],
+                 display_name=display_name,
+                 generatedEmailDraft=primary_sub.get("generated_email_draft"),
+                 generatedAppealDraft=primary_sub.get("generated_appeal_draft"),
+                 emailPrompt=primary_sub.get("email_prompt"),
+                 appealPrompt=primary_sub.get("appeal_prompt"),
+                 documents=all_documents
+             ))
         
         cases_sorted_desc = sorted(cases_with_numbers, key=lambda c: c.submitted_at, reverse=True)
         email_group_list.append(EmailGroupResponse(

@@ -3,20 +3,42 @@
 
 echo "Starting Ilan Legal App Backend..."
 
-# Check if Python is installed
-if ! command -v python3 &> /dev/null; then
+# Function to find suitable python
+find_python() {
+    if command -v python3.11 &> /dev/null; then
+        echo "python3.11"
+    elif command -v python3.12 &> /dev/null; then
+        echo "python3.12"
+    elif command -v python3.10 &> /dev/null; then
+        echo "python3.10"
+    elif command -v python3 &> /dev/null; then
+        echo "python3"
+    else
+        return 1
+    fi
+}
+
+PYTHON_CMD=$(find_python)
+
+if [ -z "$PYTHON_CMD" ]; then
     echo "Error: Python 3 is not installed"
     exit 1
 fi
 
+echo "Using Python interpreter: $PYTHON_CMD"
+
 # Check if virtual environment exists
 if [ ! -d "venv" ]; then
-    echo "Creating virtual environment..."
-    python3 -m venv venv
+    echo "Creating virtual environment with $PYTHON_CMD..."
+    $PYTHON_CMD -m venv venv
 fi
 
 # Activate virtual environment
 source venv/bin/activate
+
+# Upgrade pip to avoid build issues
+echo "Upgrading pip..."
+pip install --upgrade pip
 
 # Install dependencies
 echo "Installing dependencies..."
@@ -29,5 +51,7 @@ fi
 
 # Start the server
 echo "Starting FastAPI server..."
+# Add parent directory to PYTHONPATH to allow imports like 'from backend.config import settings'
+export PYTHONPATH=$PYTHONPATH:$(cd .. && pwd)
 python main.py
 

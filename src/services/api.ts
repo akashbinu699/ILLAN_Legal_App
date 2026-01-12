@@ -37,17 +37,16 @@ export const api = {
                     },
                     benefitType: 'AUTRES', // Default, logic to map prestations needed
                     description: c.description,
-                    documents: [
-                        {
-                            id: 'doc1',
-                            name: c.display_name ? c.display_name.split('_')[2] || 'Document' : 'Document',
-                            size: 'Unknown',
-                            type: 'pdf'
-                        }
-                    ],
+                    documents: c.documents ? c.documents.map((doc: any, idx: number) => ({
+                        id: `doc-${c.id}-${idx}`,
+                        name: doc.filename,
+                        size: 'Unknown',
+                        type: doc.filename.toLowerCase().endsWith('.pdf') ? 'pdf' : 'other'
+                    })) : [],
                     isRead: c.status !== 'NEW',
                     statusTag: mapStage(c.stage)
                 });
+                console.log(`[API DEBUG] Case ${c.case_id} has ${c.documents?.length || 0} documents.`);
             });
         });
 
@@ -101,6 +100,17 @@ export const api = {
         if (!response.ok) {
             const error = await response.json();
             throw new Error(error.detail || 'Sync failed');
+        }
+        return response.json();
+    },
+
+    async syncAllGmail() {
+        const response = await fetch(`${API_BASE_URL}/sync-all-gmail`, {
+            method: 'POST',
+        });
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Global Sync failed');
         }
         return response.json();
     }

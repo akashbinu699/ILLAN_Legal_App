@@ -115,16 +115,24 @@ function App() {
   };
 
   const handleSyncGmail = async () => {
-    if (!selectedCaseId) return;
     try {
       setSyncLoading(true);
-      const result = await api.syncGmail(selectedCaseId);
-      alert(`Sync completed! ${result.synced_count} new messages found.`);
-      // Refresh cases if messages were synced
-      if (result.synced_count > 0) {
-        const data = await api.getCases();
-        setCases(data);
+      // Perform Global Sync
+      const result = await api.syncAllGmail();
+      
+      const newCasesCount = result.new_cases || 0;
+      const processedCount = result.processed || 0;
+      
+      if (newCasesCount > 0) {
+        alert(`Sync completed! Found ${newCasesCount} new case(s).`);
+      } else {
+         alert(`Sync completed! No new cases found (Checked ${result.total_found || 0} emails).`);
       }
+
+      // Always reload cases to show updates/new cases
+      const data = await api.getCases();
+      setCases(data);
+      
     } catch (err) {
       console.error("Sync failed", err);
       alert("Gmail Sync failed. Please check your credentials.");
@@ -314,40 +322,75 @@ Je me permets de vous contacter afin de contester.
       )}
 
       {/* Main Layout (Lawyer View) */}
+      {/* Main Layout (Lawyer View) */}
       {mainView === 'LAWYER' && (
         <div className="flex flex-1 overflow-hidden relative">
-          {/* Sidebar */}
-          <Sidebar
-            cases={filteredCases}
-            selectedCaseId={selectedCaseId}
-            onSelectCase={setSelectedCaseId}
-            showUnreadOnly={showUnreadOnly}
-            onToggleUnread={setShowUnreadOnly}
-            searchTerm={searchTerm}
-            onSearchChange={setSearchTerm}
-            selectedBenefits={selectedBenefits}
-            onBenefitChange={setSelectedBenefits}
-            selectedStage={selectedStage}
-            onStageChange={setSelectedStage}
-          />
+          
+          {/* Empty State Handling */}
+          {cases.length === 0 && !loading ? (
+             <div className="flex-1 flex flex-col items-center justify-center bg-gray-50 text-center p-8">
+                <div className="w-24 h-24 bg-gray-200 rounded-full flex items-center justify-center mb-6">
+                   <svg className="w-10 h-10 text-gray-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M20 13V6a2 2 0 00-2-2H6a2 2 0 00-2 2v7m16 0v5a2 2 0 01-2 2H6a2 2 0 01-2-2v-5m16 0h-2.586a1 1 0 00-.707.293l-2.414 2.414a1 1 0 01-.707.293h-3.172a1 1 0 01-.707-.293l-2.414-2.414A1 1 0 006.586 13H4"></path>
+                   </svg>
+                </div>
+                <h3 className="text-xl font-bold text-gray-800 mb-2">No Cases Found</h3>
+                <p className="text-gray-600 max-w-sm mb-8">
+                   Your database is currently empty. Click the button below to sync with Gmail and import your cases.
+                </p>
+                <button
+                   onClick={handleSyncGmail}
+                   disabled={syncLoading}
+                   className="bg-[#166534] text-white px-6 py-3 rounded-lg font-bold hover:bg-green-800 transition-colors flex items-center gap-2 disabled:opacity-50"
+                >
+                   {syncLoading ? (
+                     <>
+                       <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg>
+                       Syncing...
+                     </>
+                   ) : (
+                     <>
+                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                       Sync from Gmail
+                     </>
+                   )}
+                </button>
+             </div>
+          ) : (
+            <>
+              {/* Sidebar */}
+              <Sidebar
+                cases={filteredCases}
+                selectedCaseId={selectedCaseId}
+                onSelectCase={setSelectedCaseId}
+                showUnreadOnly={showUnreadOnly}
+                onToggleUnread={setShowUnreadOnly}
+                searchTerm={searchTerm}
+                onSearchChange={setSearchTerm}
+                selectedBenefits={selectedBenefits}
+                onBenefitChange={setSelectedBenefits}
+                selectedStage={selectedStage}
+                onStageChange={setSelectedStage}
+              />
 
+              {/* Main Content Area */}
+              <main className="flex-1 flex flex-col min-w-0 bg-white">
+                <CaseHeader
+                  caseData={selectedCase}
+                  viewMode={viewMode}
+                  onViewChange={setViewMode}
+                  onCaseStageChange={handleUpdateCaseStage}
+                  onFeedbackToggle={handleFeedbackToggle}
+                  onSyncGmail={handleSyncGmail}
+                  syncLoading={syncLoading}
+                />
 
-          {/* Main Content Area */}
-          <main className="flex-1 flex flex-col min-w-0 bg-white">
-            <CaseHeader
-              caseData={selectedCase}
-              viewMode={viewMode}
-              onViewChange={setViewMode}
-              onCaseStageChange={handleUpdateCaseStage}
-              onFeedbackToggle={handleFeedbackToggle}
-              onSyncGmail={handleSyncGmail}
-              syncLoading={syncLoading}
-            />
-
-            <div className="flex-1 overflow-hidden relative bg-white">
-              {renderContent()}
-            </div>
-          </main>
+                <div className="flex-1 overflow-hidden relative bg-white">
+                  {renderContent()}
+                </div>
+              </main>
+            </>
+          )}
         </div>
       )}
     </div>

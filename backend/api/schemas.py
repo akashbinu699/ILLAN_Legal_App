@@ -55,6 +55,10 @@ class PrestationSchema(BaseModel):
     name: str
     isAccepted: bool
 
+class DocumentSchema(BaseModel):
+    filename: str
+    mime_type: str
+
 class CaseResponse(BaseModel):
     id: str # Changed Int to Str
     case_id: str
@@ -71,6 +75,7 @@ class CaseResponse(BaseModel):
     generatedAppealDraft: Optional[str] = None
     emailPrompt: Optional[str] = None
     appealPrompt: Optional[str] = None
+    documents: List[DocumentSchema] = []
     
     class Config:
         from_attributes = True

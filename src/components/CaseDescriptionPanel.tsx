@@ -40,6 +40,7 @@ export const CaseDescriptionPanel: React.FC<CaseDescriptionPanelProps> = ({
       </div>
 
       <div className="space-y-3">
+        <h3 className="text-sm font-semibold text-gray-700 uppercase tracking-wider">Files & Attachments</h3>
         {/* Horizontal scroll documents */}
         <div className="flex gap-4 overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-green-200 scrollbar-track-transparent">
           {caseData.documents.map((doc) => (
