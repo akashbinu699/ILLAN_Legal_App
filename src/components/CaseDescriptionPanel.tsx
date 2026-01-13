@@ -14,6 +14,11 @@ export const CaseDescriptionPanel: React.FC<CaseDescriptionPanelProps> = ({
 }) => {
   const [description, setDescription] = useState(caseData.description);
 
+  // Fix: Sync local state with prop changes when user switches cases
+  React.useEffect(() => {
+    setDescription(caseData.description);
+  }, [caseData.description, caseData.id]);
+
   const handleChange = (e: React.ChangeEvent<HTMLTextAreaElement>) => {
     const val = e.target.value;
     if (val.length <= 1000) {

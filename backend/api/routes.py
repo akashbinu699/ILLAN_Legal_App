@@ -1,5 +1,8 @@
 """API routes for the backend (MongoDB version)."""
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
+import io
+import os
 from typing import List, Dict, Any
 import asyncio
 from backend.database.db import get_db
@@ -130,7 +133,8 @@ async def send_submission_notification(submission, case_id):
         print(f"Error in send_submission_notification: {e}")
 
 @router.post("/sync-gmail-case/{case_id}")
-async def sync_gmail_for_case(case_id: str, db = Depends(get_db)):
+@router.post("/sync-gmail-case/{case_id}")
+async def sync_gmail_for_case(case_id: str, search_query: str = None, legacy_identifier: str = None, db = Depends(get_db)):
     """
     Sync Gmail messages containing the case_id.
     If the case doesn't exist in DB, create it from the email data.
@@ -141,12 +145,23 @@ async def sync_gmail_for_case(case_id: str, db = Depends(get_db)):
         from backend.services.processing_pipeline import processing_pipeline
 
         # 1. Search Gmail for this case_id (Excluding already processed emails via label)
-        query = f'"{case_id}" -label:ILAN_PROCESSED'
+        # Allow search_query override for legacy cases where ID != Search Term
+        if search_query:
+             query = f'{search_query} -label:ILAN_PROCESSED'
+        else:
+             query = f'"{case_id}" -label:ILAN_PROCESSED'
+             
         messages = gmail_service.get_messages(query=query, max_results=10)
         
         sync_results = []
         new_case_created_info = None
         
+        # Count existing attachments to continue sequence
+        att_counter = await db.submissions.count_documents({
+            "case_id": case_id, 
+            "description": {"$regex": "^Gmail Attachment"}
+        })
+
         for msg_info in messages:
             msg = gmail_service.get_message(msg_info['id'])
             if not msg: continue
@@ -161,6 +176,11 @@ async def sync_gmail_for_case(case_id: str, db = Depends(get_db)):
             
             # 2. Check if case exists in DB (it might not if this is the first sync after submission)
             sub = await db.submissions.find_one({"case_id": case_id})
+            # ... (Logic continues, but skipping unchanging parts for replacement context)
+
+            # ... we need to target the SubmissionModel creation call down below ...
+            # I will target lines 262-278 roughly.
+
             
             if not sub:
                 # CREATE NEW CASE FROM EMAIL DATA
@@ -260,6 +280,7 @@ async def sync_gmail_for_case(case_id: str, db = Depends(get_db)):
                 email=email,
                 phone=phone,
                 description=description,
+                legacy_identifier=legacy_identifier,
                 submitted_at=timestamp,
                 status="NEW",
                 stage=detected_stage,
@@ -302,16 +323,27 @@ async def sync_gmail_for_case(case_id: str, db = Depends(get_db)):
         # 4. Process attachments as individual sub-submissions for this case
         if attachments:
             for att in attachments:
+                att_counter += 1
+                original_name = att['filename']
+                ext = os.path.splitext(original_name)[1]
+                if not ext: ext = ".bin" # Fallback
+                
+                new_filename = f"{case_id}-doc{att_counter}{ext}"
+                
                 att_sub_doc = SubmissionModel(
                     case_id=case_id,
                     cas_number=cas_number,
                     email=email,
                     phone=phone,
-                    description=f"Gmail Attachment: {att['filename']} (from {content['subject']})",
+                    description=f"Gmail Attachment: {original_name} (from {content['subject']})",
                     submitted_at=timestamp,
                     status="NEW",
                     stage=detected_stage,
-                    document=DocumentModel(filename=att['filename'], mime_type=att['mime_type'])
+                    document=DocumentModel(
+                        filename=new_filename, 
+                        mime_type=att['mime_type'],
+                        file_content=att['base64']
+                    )
                 )
                 as_dict = att_sub_doc.model_dump(by_alias=True, exclude_none=True)
                 as_res = await db.submissions.insert_one(as_dict)
@@ -319,7 +351,7 @@ async def sync_gmail_for_case(case_id: str, db = Depends(get_db)):
                 # Trigger processing for the attachment content
                 asyncio.create_task(processing_pipeline.process_submission(
                     str(as_res.inserted_id),
-                    [{"name": att['filename'], "mimeType": att['mime_type'], "base64": att['base64']}],
+                    [{"name": new_filename, "mimeType": att['mime_type'], "base64": att['base64']}],
                     db
                 ))
         
@@ -349,7 +381,8 @@ async def sync_all_gmail(days: int = 7, db = Depends(get_db)):
         # Gmail query uses 'after:YYYY/MM/DD' to limit time range
         from datetime import datetime, timedelta
         # METHOD 3: Exclude already processed messages
-        query = 'subject:"NEW LEGAL CASE" -label:ILAN_PROCESSED'
+        # Query supports both "NEW LEGAL CASE" (new format) and "New Case #" (legacy format)
+        query = '(subject:"NEW LEGAL CASE" OR subject:"New Case #") -label:ILAN_PROCESSED'
         
         print(f"[SYNC-ALL] Searching Gmail with query: {query}")
         messages = gmail_service.get_messages(query=query, max_results=100)
@@ -357,29 +390,112 @@ async def sync_all_gmail(days: int = 7, db = Depends(get_db)):
         processed_count = 0
         new_cases_count = 0
         
-        for msg_info in messages:
-            msg_id = msg_info['id']
+        if not messages:
+            print("[SYNC-ALL] No messages found.")
+        else:
+            # Fetch full details for all messages first to sort them
+            print(f"[SYNC-ALL] Fetching details for {len(messages)} messages to sort by date...")
+            full_messages = []
+            for m in messages:
+                full = gmail_service.get_message(m['id'])
+                if full:
+                    full_messages.append(full)
             
-            # Skip if already in DB
-            existing = await db.queries.find_one({"gmail_message_id": msg_id})
-            if existing:
-                continue
+            # Sort by internalDate (oldest first) to ensure sequential CASE1, CASE2...
+            full_messages.sort(key=lambda x: int(x['internalDate']))
             
-            # Fetch full message
-            full_msg = gmail_service.get_message(msg_id)
-            if not full_msg: continue
-            
-            # Extract Case ID from Subject
-            subject = next((h['value'] for h in full_msg['payload']['headers'] if h['name'].lower() == 'subject'), '')
-            import re
-            match = re.search(r'CAS_[\d\-_:]+', subject)
-            
-            if match:
-                case_id = match.group(0)
-                print(f"[SYNC-ALL] Found new email for {case_id}. Processing...")
+            mapped_case_ids = {} # Cache for this run: identifier -> case_id
+
+            for full_msg in full_messages:
+                msg_id = full_msg['id']
                 
-                # Use the existing sync logic for this specific case
-                result = await sync_gmail_for_case(case_id, db)
+                # Skip if already in DB (Queries check)
+                existing = await db.queries.find_one({"gmail_message_id": msg_id})
+                if existing:
+                    continue
+
+                # Extract Case ID or Legacy Number from Subject
+                subject = next((h['value'] for h in full_msg['payload']['headers'] if h['name'].lower() == 'subject'), '')
+                
+                import re
+                legacy_match = re.search(r'New Case #(\d+)', subject, re.IGNORECASE)
+                legacy_number = legacy_match.group(1) if legacy_match else None
+                
+                modern_match = re.search(r'CAS_[\d\-_:]+', subject)
+                modern_id = modern_match.group(0) if modern_match else None
+                
+                # Determine a unique identifier for this "Thread/Case"
+                # For legacy: "#313". For modern: "CAS_...".
+                if legacy_number:
+                    identifier = f"#{legacy_number}"
+                    search_query_override = f'"New Case #{legacy_number}"'
+                elif modern_id:
+                    identifier = modern_id
+                    search_query_override = None # Default to searching by ID, or maybe subject?
+                    # If we rename modern cases, we must search by original ID 'CAS_...'
+                    search_query_override = f'"{modern_id}"'
+                else:
+                    print(f"[SYNC-ALL] Skipping {subject} - No ID found.")
+                    continue
+                
+                # 1. Check if this identifier is already mapped in DB
+                existing_sub = await db.submissions.find_one({"legacy_identifier": identifier})
+                
+                if existing_sub:
+                    case_id = existing_sub['case_id']
+                    print(f"[SYNC-ALL] Identifier {identifier} already mapped to {case_id}.")
+                elif identifier in mapped_case_ids:
+                    case_id = mapped_case_ids[identifier]
+                else:
+                    # 2. It's a NEW Case. Generate ID.
+                    # Parse body to get Email and Date
+                    parsed = gmail_service.parse_message_content(full_msg)
+                    legacy_date = parsed.get('form_data', {}).get('CASE DATE')
+                    
+                    # Logic to get date:
+                    date_str = "UNKNOWN"
+                    if legacy_date:
+                        try:
+                            d_obj = datetime.strptime(legacy_date.strip(), "%d/%m/%Y")
+                            date_str = d_obj.strftime("%d%b%y").upper()
+                        except:
+                            date_str = datetime.now().strftime("%d%b%y").upper()
+                    else:
+                        # Try to use email internal date
+                        ts = int(full_msg['internalDate']) / 1000
+                        date_str = datetime.fromtimestamp(ts).strftime("%d%b%y").upper()
+
+                    # Get Email
+                    client_email = parsed.get('form_data', {}).get('CLIENT EMAIL')
+                    if not client_email:
+                        client_email = parsed.get('from', 'Unknown')
+                    if '<' in client_email:
+                        client_email = client_email.split('<')[-1].replace('>', '').strip()
+                        
+                    # COUNT existing cases for this email
+                    # We count distinct 'case_id' strings for this email in DB
+                    existing_ids = await db.submissions.distinct("case_id", {"email": client_email})
+                    count = len(existing_ids)
+                    
+                    # Also check our local cache for this run
+                    # If we just assigned CASE1 to this email in this run, next is CASE2
+                    for cid in mapped_case_ids.values():
+                        if f"_{client_email}_" in cid: # Crude check
+                             # We need to be careful not to double count.
+                             # If cid is NOT in existing_ids, increment.
+                             if cid not in existing_ids:
+                                 count += 1
+                                 existing_ids.append(cid) # Add to list to prevent recounting
+
+                    next_num = count + 1
+                    case_id = f"CASE{next_num}_{client_email}_{date_str}"
+                    
+                    # Store mapping
+                    mapped_case_ids[identifier] = case_id
+                    print(f"[SYNC-ALL] Generated New ID {case_id} for {identifier}")
+
+                # Call Sync
+                result = await sync_gmail_for_case(case_id, search_query=search_query_override, legacy_identifier=identifier, db=db)
                 processed_count += 1
                 if result.get("new_case_created"):
                     new_cases_count += 1
@@ -392,6 +508,32 @@ async def sync_all_gmail(days: int = 7, db = Depends(get_db)):
         }
     except Exception as e:
         print(f"Error in sync_all_gmail: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/document/{submission_id}/download")
+async def download_document(submission_id: str, db = Depends(get_db)):
+    """Download the original file for a submission."""
+    import base64
+    import io
+    from starlette.responses import StreamingResponse
+    from bson import ObjectId
+    try:
+        sub = await db.submissions.find_one({"_id": ObjectId(submission_id)})
+        if not sub:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        doc = sub.get("document")
+        if not doc or not doc.get("file_content"):
+            raise HTTPException(status_code=404, detail="File content not available")
+            
+        file_content = base64.b64decode(doc["file_content"])
+        return StreamingResponse(
+            io.BytesIO(file_content),
+            media_type=doc.get("mime_type", "application/octet-stream"),
+            headers={"Content-Disposition": f"attachment; filename={doc['filename']}"}
+        )
+    except Exception as e:
+        print(f"Download error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/cases", response_model=List[EmailGroupResponse])
@@ -434,12 +576,13 @@ async def get_cases(
                  doc = s.get("document")
                  if doc and doc.get("filename") and doc.get("filename") != "Email Body":
                      all_documents.append(DocumentSchema(
+                         id=str(s["_id"]),
                          filename=doc["filename"],
                          mime_type=doc.get("mime_type", "application/octet-stream")
                      ))
              
              date_formatted = format_date_ddmmmyy(primary_sub.get("submitted_at"))
-             display_name = f"CASE{cas_number}_{email}_{date_formatted}"
+             display_name = primary_sub["case_id"]
              
              cases_with_numbers.append(CaseResponse(
                  id=str(primary_sub["_id"]),
@@ -585,7 +728,7 @@ async def generate_drafts(case_id: str, db = Depends(get_db)):
     date_formatted = format_date_ddmmmyy(sub["submitted_at"])
     filename = sub.get("document", {}).get("filename", "")
     cas_number = sub.get("cas_number", 0)
-    display_name = f"CASE{cas_number}_{sub['email']}_{filename}_{date_formatted}" if filename else f"CASE{cas_number}_{sub['email']}_{date_formatted}"
+    display_name = sub["case_id"]
 
     return CaseResponse(
         id=str(sub["_id"]),

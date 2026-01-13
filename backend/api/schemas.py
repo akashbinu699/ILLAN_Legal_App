@@ -56,6 +56,7 @@ class PrestationSchema(BaseModel):
     isAccepted: bool
 
 class DocumentSchema(BaseModel):
+    id: str
     filename: str
     mime_type: str
 

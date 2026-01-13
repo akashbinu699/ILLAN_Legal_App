@@ -30,8 +30,49 @@ async def clear_db():
     await db.queries.delete_many({})
     
     print("🗑️  Deleted all data.")
-    print("\n✅ Database is now EMPTY.")
-    print("Next Step: Click 'Sync Gmail' in the app to import ONLY real emails.")
+    
+    print("\nRESETTING GMAIL LABELS:")
+    try:
+        from backend.services.gmail_service import gmail_service
+        # Authenticate if needed
+        if not gmail_service.service:
+            gmail_service.authenticate()
+            
+        print("Searching for processed emails...")
+        # Get label ID
+        results = gmail_service.service.users().labels().list(userId='me').execute()
+        labels = results.get('labels', [])
+        label_id = next((l['id'] for l in labels if l['name'] == "ILAN_PROCESSED"), None)
+        
+        if label_id:
+            # Find messages
+            response = gmail_service.service.users().messages().list(
+                userId='me', 
+                q='label:ILAN_PROCESSED'
+            ).execute()
+            messages = response.get('messages', [])
+            
+            if messages:
+                print(f"Found {len(messages)} processed emails. Removing label...")
+                batch = {
+                    'ids': [msg['id'] for msg in messages],
+                    'removeLabelIds': [label_id]
+                }
+                gmail_service.service.users().messages().batchModify(
+                    userId='me',
+                    body=batch
+                ).execute()
+                print("✅ 'ILAN_PROCESSED' label removed from all messages.")
+            else:
+                print("No messages found with label.")
+        else:
+            print("Label 'ILAN_PROCESSED' not found.")
+            
+    except Exception as e:
+        print(f"⚠️ Error resetting Gmail labels: {e}")
+
+    print("\n✅ System Reset Complete.")
+    print("Next Step: Click 'Sync Gmail' in the app to re-import emails and save PDFs.")
     
     await MongoDB.close_db()
 

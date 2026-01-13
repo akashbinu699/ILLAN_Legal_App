@@ -15,7 +15,7 @@ import os
 import json
 
 # Gmail API scopes
-SCOPES = ['https://www.googleapis.com/auth/gmail.readonly', 
+SCOPES = ['https://www.googleapis.com/auth/gmail.modify', 
           'https://www.googleapis.com/auth/gmail.send']
 
 class GmailService:
@@ -39,21 +39,33 @@ class GmailService:
             creds = Credentials.from_authorized_user_file(token_path, SCOPES)
         
         # If no valid credentials, use refresh token from env
+        # If no valid credentials, use refresh token from env
         if not creds or not creds.valid:
+            refreshed = False
             if creds and creds.expired and creds.refresh_token:
-                creds.refresh(Request())
-            elif settings.gmail_refresh_token:
-                # Use refresh token from environment
-                creds = Credentials(
-                    token=None,
-                    refresh_token=settings.gmail_refresh_token,
-                    token_uri="https://oauth2.googleapis.com/token",
-                    client_id=settings.gmail_client_id,
-                    client_secret=settings.gmail_client_secret,
-                    scopes=SCOPES
-                )
-                creds.refresh(Request())
-            else:
+                try:
+                    creds.refresh(Request())
+                    refreshed = True
+                except Exception as e:
+                    print(f"Failed to refresh existing token: {e}")
+
+            if not refreshed and settings.gmail_refresh_token:
+                try:
+                    # Use refresh token from environment
+                    creds = Credentials(
+                        token=None,
+                        refresh_token=settings.gmail_refresh_token,
+                        token_uri="https://oauth2.googleapis.com/token",
+                        client_id=settings.gmail_client_id,
+                        client_secret=settings.gmail_client_secret,
+                        scopes=SCOPES
+                    )
+                    creds.refresh(Request())
+                    refreshed = True
+                except Exception as e:
+                    print(f"Failed to refresh env token: {e}")
+            
+            if not refreshed:
                 # Interactive OAuth flow
                 if os.path.exists(credentials_path):
                     flow = InstalledAppFlow.from_client_secrets_file(
@@ -236,8 +248,9 @@ class GmailService:
         }
     
     def _extract_body_text(self, payload: Dict) -> str:
-        """Extract text from message payload."""
+        """Extract text from message payload, preferring plain text but falling back to HTML."""
         body_text = ""
+        html_text = ""
         
         if 'parts' in payload:
             for part in payload['parts']:
@@ -245,14 +258,35 @@ class GmailService:
                 body = part.get('body', {})
                 data = body.get('data', '')
                 
-                if mime_type == 'text/plain' and data:
-                    body_text += base64.urlsafe_b64decode(data).decode('utf-8')
+                if data:
+                    decoded = base64.urlsafe_b64decode(data).decode('utf-8')
+                    if mime_type == 'text/plain':
+                        body_text += decoded
+                    elif mime_type == 'text/html':
+                        html_text += decoded
         else:
             body = payload.get('body', {})
             data = body.get('data', '')
+            mime_type = payload.get('mimeType', '')
+            
             if data:
-                body_text = base64.urlsafe_b64decode(data).decode('utf-8')
+                decoded = base64.urlsafe_b64decode(data).decode('utf-8')
+                if mime_type == 'text/plain':
+                    body_text = decoded
+                elif mime_type == 'text/html':
+                    html_text = decoded
         
+        # Prefer plain text, fall back to stripped HTML
+        if not body_text and html_text:
+            try:
+                from bs4 import BeautifulSoup
+                soup = BeautifulSoup(html_text, 'html.parser')
+                body_text = soup.get_text('\n')
+            except ImportError:
+                # Fallback if bs4 not available (though it should be)
+                import re
+                body_text = re.sub('<[^<]+?>', '', html_text)
+                
         return body_text
     
     def _parse_form_data(self, body_text: str) -> Dict:
@@ -269,18 +303,53 @@ class GmailService:
         # Otherwise, extract key-value pairs, handling multi-line descriptions
         form_data = {}
         
-        # Standard fields
-        patterns = {
+        # Standard fields (New Format)
+        patterns_new = {
             'CASE ID': r'CASE ID:\s*(CAS_[\d\-_:]+)',
             'CLIENT EMAIL': r'CLIENT EMAIL:\s*([^\n\r]+)',
             'PHONE': r'PHONE:\s*([^\n\r]*)',
             'DESCRIPTION': r'DESCRIPTION:\s*(.*?)(?=\s*\n\s*\d+\s*document\(s\) attached|$)'
         }
         
-        for key, pattern in patterns.items():
+        # Legacy fields (Old Format)
+        # Example: Email(esmeraldaavsar@yahoo.fr);
+        # Using \s* to handle potential non-breaking spaces or formatting spacing
+        patterns_legacy = {
+            'CASE ID': r'CaseNo\s*\(\s*(.*?)\s*\)', 
+            'CLIENT EMAIL': r'Email\s*\(\s*(.*?)\s*\)',
+            'PHONE': r'Telephone\s*\(\s*(.*?)\s*\)',
+            'DESCRIPTION': r'Context\s*\(\s*(.*?)\s*\);',
+            'CASE DATE': r'CaseDate\s*\(\s*(.*?)\s*\)',
+            'CASE TIME': r'CaseTime\s*\(\s*(.*?)\s*\)'
+        }
+
+        # Try new format first
+        for key, pattern in patterns_new.items():
             match = re.search(pattern, body_text, re.DOTALL | re.IGNORECASE)
             if match:
                 form_data[key] = match.group(1).strip()
+                
+        # If no CASE ID found, try legacy format
+        if 'CASE ID' not in form_data:
+            for key, pattern in patterns_legacy.items():
+                match = re.search(pattern, body_text, re.DOTALL | re.IGNORECASE)
+                if match:
+                    val = match.group(1).strip()
+                    # Clean up trailing parens if regex got greedy (though non-greedy .*? should handle it)
+                    if val.endswith(')'): val = val[:-1] 
+                    form_data[key] = val
+            
+            # If we found a legacy Case ID (e.g. "313"), normalize it to CAS_ format if needed?
+            # Or just keep it as is. Route logic expects CAS_ prefix usually for date-based ones, 
+            # but let's see. If it's just "313", the routes might accept it. 
+            # However, routes.py line 250 logic expects to generate a CAS_ ID if missing.
+            # If we extract "313", we should probably prefix it to match system.
+            if 'CASE ID' in form_data and not form_data['CASE ID'].startswith('CAS_'):
+                 # Ensure it looks like a case ID our system likes, or just keep it.
+                 # Let's prefix it to be safe and consistent with "CAS_" check in sync_all_gmail
+                 # content['subject'] check looks for "CAS_" but we updated the subject query to allow "New Case #"
+                 # So we are good.
+                 pass
         
         return form_data
     

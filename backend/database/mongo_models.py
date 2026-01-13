@@ -25,6 +25,7 @@ class ChunkModel(MongoBaseModel):
 class DocumentModel(MongoBaseModel):
     filename: str
     mime_type: str
+    file_content: Optional[str] = None # Base64 encoded content
     original_text: str = ""
     cleaned_text: str = ""
     structured_data: Dict[str, Any] = {}
@@ -40,6 +41,7 @@ class SubmissionModel(MongoBaseModel):
     email: str
     phone: str
     description: str
+    legacy_identifier: Optional[str] = None
     submitted_at: datetime = Field(default_factory=datetime.utcnow)
     status: str = "NEW"
     stage: str = "RAPO"

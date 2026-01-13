@@ -37,8 +37,8 @@ export const api = {
                     },
                     benefitType: 'AUTRES', // Default, logic to map prestations needed
                     description: c.description,
-                    documents: c.documents ? c.documents.map((doc: any, idx: number) => ({
-                        id: `doc-${c.id}-${idx}`,
+                    documents: c.documents ? c.documents.map((doc: any) => ({
+                        id: doc.id,
                         name: doc.filename,
                         size: 'Unknown',
                         type: doc.filename.toLowerCase().endsWith('.pdf') ? 'pdf' : 'other'
