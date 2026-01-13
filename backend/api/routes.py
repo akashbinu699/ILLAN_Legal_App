@@ -1,5 +1,5 @@
 """API routes for the backend (MongoDB version)."""
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 import io
 import os
@@ -234,33 +234,13 @@ async def sync_gmail_for_case(case_id: str, search_query: str = None, legacy_ide
             phone = form_data.get('PHONE', "")
             description = form_data.get('DESCRIPTION', content['body'])
                 
-            # Use Gemini to detect stage and type
+            # Use Gemini to detect stage and type using the new dedicated method
             print(f"[SYNC] Calling Gemini to analyze case stage/type...")
-            analysis_prompt = f"""
-            Tu es un expert en droit administratif français. Analyse cette description de dossier :
-            
-            DESCRIPTION: {description}
-            
-            Détermine :
-            1. L'étape du dossier (CONTROL, RAPO, ou LITIGATION).
-            2. Les types de prestations sociales concernées (ex: RSA, APL, Prime d'activité, etc.).
-            
-            Réponds UNIQUEMENT au format JSON comme ceci :
-            {{"stage": "STAGE_NAME", "prestations": ["P1", "P2"]}}
-            """
             try:
-                analysis_raw = await llm_service.generate(analysis_prompt)
-                print(f"[SYNC] Gemini Raw Response: {analysis_raw}")
-                # Use regex to find the JSON block in case there is markdown wrapper
-                import re
-                match = re.search(r'\{.*\}', analysis_raw, re.DOTALL)
-                if match:
-                    analysis = json.loads(match.group())
-                    detected_stage = analysis.get("stage", "RAPO")
-                    detected_prestations = analysis.get("prestations", [])
-                else:
-                    detected_stage = "RAPO"
-                    detected_prestations = []
+                analysis = await llm_service.analyze_case_stage_and_benefits(description)
+                detected_stage = analysis.get("stage", "RAPO")
+                detected_prestations = analysis.get("benefits", [])
+                print(f"[SYNC] Gemini Analysis Result: Stage={detected_stage}, Benefits={detected_prestations}")
             except Exception as ex:
                 print(f"[SYNC] Gemini analysis failed: {ex}")
                 detected_stage = "RAPO"
@@ -371,11 +351,21 @@ async def sync_gmail_for_case(case_id: str, search_query: str = None, legacy_ide
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/sync-all-gmail")
-async def sync_all_gmail(days: int = 7, db = Depends(get_db)):
+async def sync_all_gmail(
+    background_tasks: BackgroundTasks,
+    days: int = 7, 
+    db = Depends(get_db)
+):
     """
-    Global sync: Search Gmail for all messages containing "CAS_" from the last X days.
-    Processes any message that hasn't been synced yet.
+    Trigger a background sync of Gmail messages.
+    Returns immediately to prevent timeout.
     """
+    background_tasks.add_task(process_gmail_sync, days, db)
+    return {"status": "started", "message": "Sync started in background. Refresh specifically to see new cases appear."}
+
+async def process_gmail_sync(days: int, db):
+    """Actual sync logic running in background."""
+    print("STARTING BACKGROUND GMAIL SYNC...")
     try:
         # Search for messages with CAS_ prefix (any case ID)
         # Gmail query uses 'after:YYYY/MM/DD' to limit time range
@@ -575,8 +565,24 @@ async def get_cases(
              for s in case_subs:
                  doc = s.get("document")
                  if doc and doc.get("filename") and doc.get("filename") != "Email Body":
+                     # Calculate size
+                     content_len = len(doc.get("file_content", "") or "")
+                     size_kb = content_len * 0.75 / 1024 # Approx decoding size
+                     size_str = f"{size_kb:.1f} KB"
+                     if size_kb > 1024:
+                         size_str = f"{size_kb/1024:.1f} MB"
+                     
+                     # Determine type
+                     mime = doc.get("mime_type", "").lower()
+                     doc_type = "other"
+                     if "pdf" in mime: doc_type = "pdf"
+                     elif "image" in mime or "jpg" in mime or "png" in mime: doc_type = "image"
+                     
                      all_documents.append(DocumentSchema(
                          id=str(s["_id"]),
+                         name=doc["filename"],
+                         size=size_str,
+                         type=doc_type,
                          filename=doc["filename"],
                          mime_type=doc.get("mime_type", "application/octet-stream")
                      ))

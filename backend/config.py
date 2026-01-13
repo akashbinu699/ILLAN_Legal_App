@@ -18,11 +18,11 @@ class Settings(BaseSettings):
     notification_email: str = ""  # Email address to receive form submissions
     
     # Database
-    database_path: str = "./data/database.db"
+    database_path: str = str(BACKEND_DIR / "data" / "database.db")
     mongodb_url: str = "mongodb://localhost:27017" # Default to local mongo
     
     # ChromaDB
-    chroma_db_path: str = "./data/chroma_db"
+    chroma_db_path: str = str(BACKEND_DIR / "data" / "chroma_db")
     
     # LLM
     local_llm_path: str = ""

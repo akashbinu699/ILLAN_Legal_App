@@ -4,7 +4,7 @@
 
 # Kill existing processes
 echo "Killing existing processes..."
-lsof -ti:8000,3000 | xargs kill -9 2>/dev/null || true
+lsof -ti:8000,5173 | xargs kill -9 2>/dev/null || true
 
 # Wait a moment
 sleep 2
@@ -23,6 +23,5 @@ sleep 2
 
 # Start frontend
 echo "Starting frontend server..."
-cd "$SCRIPT_DIR"
+cd "$SCRIPT_DIR/frontend"
 npm run dev
-

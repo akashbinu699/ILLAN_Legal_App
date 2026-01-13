@@ -13,9 +13,11 @@ Start-Sleep -Seconds 2
 
 Write-Host "Starting backend server..."
 $env:PYTHONPATH = $PSScriptRoot
-Start-Process -NoNewWindow -FilePath "backend\venv\Scripts\python.exe" -ArgumentList "backend\main.py"
+# Assuming python is in path or venv is active, otherwise adapt path to python
+python -m uvicorn backend.main:app --host 0.0.0.0 --port 8000 --reload
 
 Start-Sleep -Seconds 5
 
 Write-Host "Starting frontend server..."
+Set-Location frontend
 npm run dev

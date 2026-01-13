@@ -119,26 +119,38 @@ function App() {
   const handleSyncGmail = async () => {
     try {
       setSyncLoading(true);
-      // Perform Global Sync
-      const result = await api.syncAllGmail();
+      // Trigger Background Sync
+      await api.syncAllGmail();
+      alert("Sync started in background! Cases will appear as they are processed.");
 
-      const newCasesCount = result.new_cases || 0;
-      const processedCount = result.processed || 0;
-
-      if (newCasesCount > 0) {
-        alert(`Sync completed! Found ${newCasesCount} new case(s).`);
-      } else {
-        alert(`Sync completed! No new cases found (Checked ${result.total_found || 0} emails).`);
-      }
-
-      // Always reload cases to show updates/new cases
-      const data = await api.getCases();
-      setCases(data);
+      // Poll for updates every 2s for 60s max, or until user stops?
+      // Simple logic: Poll 15 times (30 seconds)
+      let attempts = 0;
+      const interval = setInterval(async () => {
+        attempts++;
+        try {
+           const data = await api.getCases();
+           // Only update if count changed? Or just update always to show progress
+            setCases(prev => {
+                if (data.length !== prev.length) {
+                   return data;
+                }
+                return prev; // Or data if deep comparison needed
+            });
+            setCases(data); // Force update
+            
+           if (attempts >= 30) {
+             clearInterval(interval);
+             setSyncLoading(false);
+           }
+        } catch (e) {
+           console.error("Polling error", e);
+        }
+      }, 2000);
 
     } catch (err) {
-      console.error("Sync failed", err);
-      alert("Gmail Sync failed. Please check your credentials.");
-    } finally {
+      console.error("Sync trigger failed", err);
+      alert("Gmail Sync trigger failed.");
       setSyncLoading(false);
     }
   };

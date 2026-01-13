@@ -20,6 +20,18 @@ export const api = {
                 // Map Backend CaseResponse to Frontend Case
                 const submittedDate = new Date(c.submitted_at);
 
+                // Map Prestations to Badges
+                const badges = (c.prestations || []).map((p: any) => ({
+                    label: p.name,
+                    color: p.isAccepted ? 'green' : 'red' // Default to green if accepted, logic can allow red
+                }));
+
+                // Determine primary benefit type (first one or AUTRES)
+                let primaryBenefit = 'AUTRES';
+                if (c.prestations && c.prestations.length > 0) {
+                    primaryBenefit = c.prestations[0].name;
+                }
+
                 allCases.push({
                     id: c.id,
                     caseNumber: c.case_id,
@@ -27,7 +39,7 @@ export const api = {
                     date: submittedDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: '2-digit' }).toUpperCase(),
                     time: submittedDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', hour12: true }).toLowerCase(),
                     fullId: c.display_name || c.case_id,
-                    badges: [], // Map prestations/benefits to badges
+                    badges: badges,
                     client: {
                         name: c.email.split('@')[0], // Placeholder name
                         street: 'Unknown',
@@ -35,13 +47,13 @@ export const api = {
                         phone: c.phone || '',
                         email: c.email
                     },
-                    benefitType: 'AUTRES', // Default, logic to map prestations needed
+                    benefitType: primaryBenefit as any,
                     description: c.description,
                     documents: c.documents ? c.documents.map((doc: any) => ({
                         id: doc.id,
-                        name: doc.filename,
-                        size: 'Unknown',
-                        type: doc.filename.toLowerCase().endsWith('.pdf') ? 'pdf' : 'other'
+                        name: doc.name || doc.filename, // Use backend name if available
+                        size: doc.size || 'Unknown',
+                        type: doc.type || 'other'
                     })) : [],
                     isRead: c.status !== 'NEW',
                     statusTag: mapStage(c.stage)

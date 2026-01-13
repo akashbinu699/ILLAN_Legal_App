@@ -332,6 +332,147 @@ Provide a comprehensive answer based on the context. Include specific citations 
             'chunks_used': [chunk['id'] for chunk in retrieved_chunks]
         }
 
+    async def analyze_case_stage_and_benefits(
+        self,
+        description: str,
+        files_content: List[str] = None
+    ) -> Dict:
+        """
+        Analyze case description to determine stage and benefits.
+        Returns a dict with 'stage' and 'benefits' keys.
+        """
+        benefits_list = [
+            'APL', 'RSA', 'PPA', 'NOEL', 'AUUVVC', 'AMENDE', 
+            'RECOUV', 'ACADINASS', 'CAFINASS', 'MAJO', 'AAH', 
+            'AEEH', 'AJPP', 'AJPA', 'AVPF', 'AUTRES'
+        ]
+        
+        stages_list = ['Contradictory', 'RAPO', 'Litigation']
+        
+        # Knowledge Base from Excel
+        knowledge_base = """
+        REFERENCE DES PRESTATIONS ET PROCEDURES :
+        
+        1. [APL] Aides personnelles au logement (APLs) et Prime de déménagement.
+           - Procédure : Recours amiable devant la CRA (2 mois) puis Tribunal Administratif (2 mois).
+           
+        2. [RSA] Revenu de solidarité active.
+           - Procédure : Recours amiable devant le Président du Conseil Départemental (2 mois) puis Tribunal Administratif (2 mois).
+           
+        3. [PPA] Prime d’activité.
+           - Procédure : Recours amiable devant la CRA (2 mois) puis Tribunal Administratif (2 mois).
+           
+        4. [NOEL] Primes de Noël (Primes exceptionnelles de fin d’année).
+           - Procédure : Recours amiable devant le Directeur de la Caf puis Tribunal Administratif.
+           
+        5. [AUUVVC] Aide universelle d’urgence aux victimes de violence conjugale.
+           - Procédure : Recours amiable devant la CRA puis Tribunal Administratif.
+           
+        6. [AMENDE] Amende administrative pour fausse déclaration ou omission délibérée.
+           - Context : Pénalité financière pour fraude.
+           - Procédure : Tribunal Administratif direct (2 mois).
+           
+        7. [RECOUV] Recouvrement d’une créance assise et liquidée par une collectivité territoriale (ex: indu RSA du Département).
+           - Context : Titre exécutoire, opposition à contrainte.
+           - Procédure : Tribunal Administratif (2 mois) pour contester le bien-fondé.
+           
+        8. [ACADINASS] Suspension des allocations familiales pour inassiduité par l'inspecteur d'academie.
+           - Context : Absentéisme scolaire sanctionné par l'académie.
+           
+        9. [CAFINASS] Suspension des allocations familiales pour inassiduité par la CAF.
+           - Context : Suite à la décision académique.
+           
+        10. [MAJO] Majoration forfaitaire de 10% de l’indu pour réparation du préjudice.
+            - Context : Pénalité sur indu frauduleux.
+            - Procédure : Tribunal Judiciaire.
+            
+        11. [AAH] Allocation aux adultes handicapés.
+            - Procédure : Recours amiable MDPH/CRA puis Tribunal Judiciaire.
+            
+        12. [AEEH] Allocation d’éducation de l’enfant handicapé.
+            - Procédure : Recours amiable MDPH/CRA puis Tribunal Judiciaire.
+            
+        13. [AJPP] Allocation journalière de présence parentale.
+            - Procédure : Recours amiable CMRA/CRA puis Tribunal Judiciaire.
+            
+        14. [AJPA] Allocation journalière du proche aidant.
+            - Procédure : Recours amiable CRA puis Tribunal Judiciaire.
+            
+        15. [AVPF] Assurance vieillesse des parents au foyer.
+            - Context : Cotisation retraite pour aidant familial/parent au foyer.
+            - Procédure : Recours amiable MDPH/CRA puis Tribunal Judiciaire.
+            
+        16. [AUTRES] Autres prestations (allocations familiales, ARS, PAJE…).
+        """
+        
+        prompt = f"""
+        Tu es un assistant juridique expert en droit administratif français.
+        Ton but est d'analyser la description d'un dossier juridique pour déterminer l'étape (Stage) et les prestations (Benefits) concernées.
+        
+        Utilise impérativement la "REFERENCE DES PRESTATIONS ET PROCEDURES" ci-dessous pour identifier les codes précis.
+        
+        {knowledge_base}
+        
+        **Description du dossier à analyser :**
+        "{description}"
+        
+        **Tâche 1 : Déterminer l'étape (Stage)**
+        Choisis UNE seule valeur parmi :
+        - 'Contradictory' : Phase initiale (demande, contrôle, lettre d'information, demande de remise de dette, échange avant décision définitive).
+        - 'RAPO' : Recours Administratif Préalable Obligatoire (Saisine de la CRA, du Président du Département, ou Directeur CAF). Le client *conteste* une décision administrative mais n'est pas encore au tribunal.
+        - 'Litigation' : Contentieux (Recours déposé au Tribunal Administratif ou Judiciaire).
+        
+        **Tâche 2 : Déterminer les Prestations (Benefits)**
+        Identifie TOUS les codes applicables (ex: RSA, APL, AMENDE...) en te basant sur les mots-clés et contextes de la référence.
+        
+        **Format de réponse attendu (JSON uniquement) :**
+        {{
+            "stage": "VALEUR_STAGE",
+            "benefits": ["CODE1", "CODE2"]
+        }}
+        """
+        
+        try:
+            response = await self.generate(prompt, temperature=0.0)
+            
+            # Clean response to ensure it's valid JSON
+            import json
+            import re
+            
+            # Find JSON block
+            match = re.search(r'\{.*\}', response, re.DOTALL)
+            if match:
+                json_str = match.group()
+                result = json.loads(json_str)
+                
+                # Validate stage
+                stage = result.get('stage', 'Contradictory')
+                if stage not in stages_list:
+                    # Fallback mapping or default
+                    if 'rapo' in stage.lower(): stage = 'RAPO'
+                    elif 'litige' in stage.lower() or 'tribunal' in stage.lower(): stage = 'Litigation'
+                    else: stage = 'Contradictory'
+                
+                # Validate benefits
+                benefits = result.get('benefits', [])
+                valid_benefits = [b for b in benefits if b in benefits_list]
+                # If LLM found benefits but they aren't in our strict list, try to map them or keep 'AUTRES'
+                if not valid_benefits and benefits:
+                     # Check if 'AUTRES' was returned
+                     if 'AUTRES' in benefits: valid_benefits.append('AUTRES')
+                
+                return {
+                    "stage": stage,
+                    "benefits": valid_benefits
+                }
+            else:
+                print(f"[LLM Analysis] Could not parse JSON from response: {response}")
+                return {"stage": "Contradictory", "benefits": []}
+                
+        except Exception as e:
+            print(f"[LLM Analysis] Error during analysis: {e}")
+            return {"stage": "Contradictory", "benefits": []}
+
 # Global instance
 llm_service = LLMService()
 

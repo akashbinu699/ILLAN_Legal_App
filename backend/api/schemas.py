@@ -57,8 +57,11 @@ class PrestationSchema(BaseModel):
 
 class DocumentSchema(BaseModel):
     id: str
-    filename: str
-    mime_type: str
+    name: str
+    size: str
+    type: str
+    filename: Optional[str] = None
+    mime_type: Optional[str] = None
 
 class CaseResponse(BaseModel):
     id: str # Changed Int to Str

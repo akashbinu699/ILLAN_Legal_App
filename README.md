@@ -4,10 +4,10 @@ This project aggregates the **Legal Manager Frontend** and the **FastAPI/MongoDB
 
 ## Project Structure
 
-- `src/`: Frontend React application (based on LegalManagerFrontEnd).
+- `frontend/`: Frontend React application.
 - `backend/`: FastAPI backend with MongoDB and ChromaDB integration.
-- `public/`: Public assets for frontend.
-- `package.json`: Frontend dependencies and scripts.
+- `docs/`: Project documentation.
+- `backend/scripts/`: Utility scripts for database management and debugging.
 
 ## Prerequisites
 
@@ -19,36 +19,46 @@ This project aggregates the **Legal Manager Frontend** and the **FastAPI/MongoDB
 
 1.  **Install Frontend Dependencies**:
     ```bash
+    cd frontend
     npm install
+    cd ..
     ```
 
 2.  **Setup Backend**:
     ```bash
-    cd backend
-    python -m venv venv
-    .\venv\Scripts\Activate.ps1
-    pip install -r requirements.txt
+    # Create valid python environment if not exists
+    python3 -m venv backend/venv
+    source backend/venv/bin/activate  # or .\backend\venv\Scripts\Activate on Windows
+    pip install -r backend/requirements.txt
     ```
 
 ## Running the Application
 
-You need two terminals to run the full stack.
+You can use the provided startup script for convenience:
+
+**Mac/Linux:**
+```bash
+chmod +x RUN
+./RUN
+```
+
+**Windows:**
+```powershell
+./run_app.ps1
+```
+
+**Manual Start:**
 
 **Terminal 1: Backend**
-```powershell
-$env:PYTHONPATH = "C:\Users\Nannie AI\Desktop\Ilan_Legal_App"; cd backend; & ".\venv\Scripts\python.exe" -m uvicorn main:app --reload
+Make sure to run from the project root.
+```bash
+python3 -m backend.main
 ```
 *Backend runs on http://localhost:8000*
 
 **Terminal 2: Frontend**
-```powershell
+```bash
+cd frontend
 npm run dev
 ```
-*Frontend runs on http://localhost:5173* (or 5174 if busy)
-
-## Features
-
-- **Case Management**: View and manage legal cases.
-- **RAG Pipeline**: Upload documents and query them using AI.
-- **Draft Generation**: Auto-generate emails and letters based on case data.
-- **MongoDB Integration**: Permanent storage for cases and drafts.
+*Frontend runs on http://localhost:5173* (or similar)
