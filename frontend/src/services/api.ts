@@ -53,7 +53,8 @@ export const api = {
                         id: doc.id,
                         name: doc.name || doc.filename, // Use backend name if available
                         size: doc.size || 'Unknown',
-                        type: doc.type || 'other'
+                        type: doc.type || 'other',
+                        mime_type: doc.mime_type
                     })) : [],
                     isRead: c.status !== 'NEW',
                     statusTag: mapStage(c.stage)
@@ -129,7 +130,9 @@ export const api = {
 };
 
 function mapStage(backendStage: string): CaseStage {
-    if (backendStage === 'CONTROL') return 'Contradictory';
-    if (backendStage === 'LITIGATION') return 'Litigation';
+    if (!backendStage) return 'Contradictory'; // Default
+    const stage = backendStage.toUpperCase();
+    if (stage === 'CONTROL' || stage === 'CONTRADICTORY') return 'Contradictory';
+    if (stage === 'LITIGATION') return 'Litigation';
     return 'RAPO';
 }

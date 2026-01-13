@@ -52,6 +52,7 @@ export interface Document {
   name: string;
   size: string; // e.g. "1.2 MB"
   type: 'pdf' | 'image' | 'other';
+  mime_type?: string;
 }
 
 export interface Case {

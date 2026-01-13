@@ -1,5 +1,5 @@
 import React from 'react';
-import { Download, Mail, RefreshCw } from 'lucide-react';
+import { Download, RefreshCw } from 'lucide-react';
 import type { Case, CaseStage, ViewMode } from '../types';
 import { cn } from '../utils/cn';
 
@@ -177,14 +177,7 @@ export const CaseHeader: React.FC<CaseHeaderProps> = ({
             <div className="text-gray-600">{caseData.client.city}</div>
           </div>
 
-          <div className="flex gap-2">
-            <button className="bg-green-300 hover:bg-green-400 text-green-800 p-1.5 rounded shadow-sm transition-colors">
-              <Mail className="h-4 w-4" />
-            </button>
-            <button className="bg-green-300 hover:bg-green-400 text-green-800 p-1.5 rounded shadow-sm transition-colors">
-              <Download className="h-4 w-4" />
-            </button>
-          </div>
+
         </div>
       </div>
     </div>

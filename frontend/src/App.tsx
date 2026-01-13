@@ -77,7 +77,11 @@ function App() {
         return false;
       }
       // 4. Stage Filter (Updated)
-      if (selectedStages.length > 0 && !selectedStages.includes(c.statusTag)) return false;
+      if (selectedStages.length > 0) {
+        // If 'Unread' is one of the selected stages (legacy check?), ignore? No 'Unread' is not a stage.
+        // Match stage
+        if (!selectedStages.includes(c.statusTag)) return false;
+      }
 
       return true;
     });
@@ -129,22 +133,22 @@ function App() {
       const interval = setInterval(async () => {
         attempts++;
         try {
-           const data = await api.getCases();
-           // Only update if count changed? Or just update always to show progress
-            setCases(prev => {
-                if (data.length !== prev.length) {
-                   return data;
-                }
-                return prev; // Or data if deep comparison needed
-            });
-            setCases(data); // Force update
-            
-           if (attempts >= 30) {
-             clearInterval(interval);
-             setSyncLoading(false);
-           }
+          const data = await api.getCases();
+          // Only update if count changed? Or just update always to show progress
+          setCases(prev => {
+            if (data.length !== prev.length) {
+              return data;
+            }
+            return prev; // Or data if deep comparison needed
+          });
+          setCases(data); // Force update
+
+          if (attempts >= 30) {
+            clearInterval(interval);
+            setSyncLoading(false);
+          }
         } catch (e) {
-           console.error("Polling error", e);
+          console.error("Polling error", e);
         }
       }, 2000);
 

@@ -103,186 +103,36 @@ class LLMService:
             raise  # Re-raise to trigger fallback
     
     def _generate_cloud(self, prompt: str, max_tokens: int, temperature: float) -> str:
-        """Generate using cloud LLM with fallback chain: Gemini 3 → OpenAI → Groq."""
-        import os
+        """Generate using Gemini (User requested no OpenAI)."""
         
-        # Debug logging
-        print(f"\n[LLM Service] Attempting to generate with cloud LLM...")
-        print(f"[LLM Service] GEMINI_API_KEY from settings: {'SET' if settings.gemini_api_key else 'NOT SET'} (length: {len(settings.gemini_api_key)})")
-        print(f"[LLM Service] OPENAI_API_KEY from settings: {'SET' if settings.openai_api_key else 'NOT SET'} (length: {len(settings.openai_api_key)})")
-        print(f"[LLM Service] GROQ_API_KEY from settings: {'SET' if settings.groq_api_key else 'NOT SET'} (length: {len(settings.groq_api_key)})")
-        
-        # Also check environment variables directly
-        env_gemini = os.getenv('GEMINI_API_KEY', '')
-        env_openai = os.getenv('OPENAI_API_KEY', '')
-        env_groq = os.getenv('GROQ_API_KEY', '')
-        print(f"[LLM Service] GEMINI_API_KEY from env: {'SET' if env_gemini else 'NOT SET'} (length: {len(env_gemini)})")
-        print(f"[LLM Service] OPENAI_API_KEY from env: {'SET' if env_openai else 'NOT SET'} (length: {len(env_openai)})")
-        print(f"[LLM Service] GROQ_API_KEY from env: {'SET' if env_groq else 'NOT SET'} (length: {len(env_groq)})")
-        
-        # Try to use environment variable if settings doesn't have it
-        gemini_key = (settings.gemini_api_key or env_gemini).strip()
-        openai_key = (settings.openai_api_key or env_openai).strip()
-        groq_key = (settings.groq_api_key or env_groq).strip()
-        
-        # 1. Try Gemini first (primary LLM)
-        if gemini_key:
-            print(f"[LLM Service] Attempting Gemini API call...")
-            try:
-                import google.generativeai as genai
-                genai.configure(api_key=gemini_key)
-                
-                # Preferred models in order - explicitly use 'models/' prefix as seen in list_models()
-                preferred_models = [
-                    "models/gemini-1.5-flash",
-                    "models/gemini-flash-latest",
-                    "models/gemini-2.0-flash",
-                    "models/gemini-1.5-pro",
-                    "models/gemini-pro-latest",
-                    "models/gemini-2.0-flash-exp"
-                ]
-                
-                # Check what's available
-                available_models = []
-                try:
-                    available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-                    print(f"[LLM Service] Available Gemini models: {available_models}")
-                except Exception as e:
-                    print(f"[LLM Service] Error listing models: {e}")
-                    available_models = ["models/gemini-1.5-flash"] # Default fallback
-                
-                # Create a list of models to try (preferred first, then others)
-                models_to_try = []
-                for pref in preferred_models:
-                    if pref in available_models:
-                        models_to_try.append(pref)
-                    elif pref.replace("models/", "") in available_models:
-                        models_to_try.append(pref.replace("models/", ""))
-                
-                # Add any other available models that weren't in preferred
-                for m in available_models:
-                    if m not in models_to_try:
-                        models_to_try.append(m)
-                
-                last_error = None
-                for target_model in models_to_try:
-                    try:
-                        print(f"[LLM Service] Trying Gemini model: {target_model}...")
-                        model = genai.GenerativeModel(target_model)
-                        
-                        generation_config = {
-                            "temperature": temperature,
-                            "max_output_tokens": max_tokens,
-                        }
-                        
-                        full_prompt = f"You are a legal assistant helping with French administrative law cases.\n\n{prompt}"
-                        
-                        response = model.generate_content(
-                            full_prompt,
-                            generation_config=generation_config
-                        )
-                        
-                        print(f"[LLM Service] Gemini API call successful with {target_model}!")
-                        return response.text
-                    except Exception as model_e:
-                        last_error = str(model_e)
-                        print(f"[LLM Service] Model {target_model} failed: {last_error}")
-                        # If it's a 429 or 404, try the next model in the list
-                        continue
-                
-                if last_error:
-                    raise Exception(f"All Gemini models failed. Last error: {last_error}")
-                
-            except Exception as e:
-                error_msg = str(e)
-                print(f"[LLM Service] Gemini failed overall: {error_msg}")
-                import traceback
-                traceback.print_exc()
-                
-        # 2. Fallback to OpenAI
-        if openai_key:
-            print(f"[LLM Service] Attempting OpenAI API call...")
-            try:
-                from openai import OpenAI
-                client = OpenAI(api_key=openai_key)
-                
-                print(f"[LLM Service] OpenAI client created, making API call...")
-                response = client.chat.completions.create(
-                    model="gpt-4-turbo-preview",
-                    messages=[
-                        {"role": "system", "content": "You are a legal assistant helping with French administrative law cases."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=max_tokens,
-                    temperature=temperature
+        # Helper to try generation
+        def try_generate(model_name):
+            print(f"[LLM Service] Trying Gemini model: {model_name}...")
+            import google.generativeai as genai
+            genai.configure(api_key=settings.gemini_api_key)
+            
+            model = genai.GenerativeModel(model_name)
+            response = model.generate_content(
+                f"You are a legal assistant helping with French administrative law cases.\n\n{prompt}",
+                generation_config=genai.types.GenerationConfig(
+                    temperature=temperature,
+                    max_output_tokens=max_tokens
                 )
-                
-                print(f"[LLM Service] OpenAI API call successful!")
-                return response.choices[0].message.content
-            except Exception as e:
-                error_type = type(e).__name__
-                error_msg = str(e)
-                print(f"[LLM Service] Error generating with OpenAI: {error_type}: {error_msg}")
-                import traceback
-                traceback.print_exc()
-                
-                # Check if it's a rate limit error
-                if "rate_limit" in error_msg.lower() or "429" in error_msg:
-                    print(f"[LLM Service] OpenAI rate limit hit. Falling back to Groq...")
-                else:
-                    print(f"[LLM Service] OpenAI error. Falling back to Groq...")
+            )
+            return response.text
+
+        # List of models to try
+        models = ["gemini-1.5-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro"]
         
-        # 3. Fallback to Groq
-        if groq_key:
-            print(f"[LLM Service] Attempting Groq API call...")
+        last_error = None
+        for m in models:
             try:
-                from openai import OpenAI
-                # Groq uses OpenAI-compatible API
-                client = OpenAI(
-                    api_key=groq_key,
-                    base_url="https://api.groq.com/openai/v1"
-                )
-                
-                print(f"[LLM Service] Groq client created, making API call...")
-                response = client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",  # Updated Groq model (llama-3.1-70b was decommissioned)
-                    messages=[
-                        {"role": "system", "content": "You are a legal assistant helping with French administrative law cases."},
-                        {"role": "user", "content": prompt}
-                    ],
-                    max_tokens=max_tokens,
-                    temperature=temperature
-                )
-                
-                print(f"[LLM Service] Groq API call successful!")
-                return response.choices[0].message.content
+                return try_generate(m)
             except Exception as e:
-                error_type = type(e).__name__
-                error_msg = str(e)
-                print(f"[LLM Service] Error generating with Groq: {error_type}: {error_msg}")
-                import traceback
-                traceback.print_exc()
+                print(f"[LLM Service] Failed with {m}: {e}")
+                last_error = e
         
-        # All LLMs failed - return error message
-        if gemini_key and openai_key and groq_key:
-            error_msg = "Error: All LLM providers (Gemini 3, OpenAI, Groq) failed. Please check API keys and quotas."
-        elif gemini_key and openai_key:
-            error_msg = "Error: Both Gemini 3 and OpenAI failed. Groq API key not configured."
-        elif gemini_key and groq_key:
-            error_msg = "Error: Both Gemini 3 and Groq failed. OpenAI API key not configured."
-        elif openai_key and groq_key:
-            error_msg = "Error: Both OpenAI and Groq failed. Gemini 3 API key not configured."
-        elif gemini_key:
-            error_msg = "Error: Gemini 3 failed. No fallback API keys (OpenAI or Groq) configured."
-        elif openai_key:
-            error_msg = "Error: OpenAI failed. No fallback API keys (Gemini 3 or Groq) configured."
-        elif groq_key:
-            error_msg = "Error: Groq failed. No fallback API keys (Gemini 3 or OpenAI) configured."
-        else:
-            error_msg = "Error: No LLM API key configured. Please set GEMINI_API_KEY, OPENAI_API_KEY, or GROQ_API_KEY in .env file."
-        
-        print(f"[LLM Service] {error_msg}")
-        return error_msg
+        return f"Error: Gemini analysis failed. {last_error}"
     
     async def generate_with_citations(
         self,
@@ -349,91 +199,125 @@ Provide a comprehensive answer based on the context. Include specific citations 
         
         stages_list = ['Contradictory', 'RAPO', 'Litigation']
         
-        # Knowledge Base from Excel
-        knowledge_base = """
-        REFERENCE DES PRESTATIONS ET PROCEDURES :
+        # Knowledge Base Loading
+        knowledge_base = ""
+        try:
+            # Try to load from external file
+            import os
+            # Assuming llm_service.py is in backend/services/
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            kb_path = os.path.join(current_dir, '..', 'knowledge_base.md')
+            
+            if os.path.exists(kb_path):
+                with open(kb_path, 'r', encoding='utf-8') as f:
+                    knowledge_base = f.read()
+                print(f"[LLM] Loaded external knowledge base from {kb_path}")
+        except Exception as e:
+            print(f"[LLM] Error reading knowledge base file: {e}")
+
+        if not knowledge_base:
+            # Default Knowledge Base
+            knowledge_base = """
+            REFERENCE DES PRESTATIONS ET PROCEDURES :
+            
+            1. [APL] Aides personnelles au logement (APL / ALS) et Prime de déménagement.
+               - Procédure : Recours amiable devant la CRA (2 mois) puis Tribunal Administratif (2 mois).
+               
+            2. [RSA] Revenu de solidarité active.
+               - Procédure : Recours amiable devant le Président du Conseil Départemental (2 mois) puis Tribunal Administratif (2 mois).
+               
+            3. [PPA] Prime d’activité.
+               - Procédure : Recours amiable devant la CRA (2 mois) puis Tribunal Administratif (2 mois).
+               
+            4. [NOEL] Primes de Noël (Primes exceptionnelles de fin d’année).
+               - Procédure : Recours amiable devant le Directeur de la Caf puis Tribunal Administratif.
+               
+            5. [AUUVVC] Aide universelle d’urgence aux victimes de violence conjugale.
+               - Procédure : Recours amiable devant la CRA puis Tribunal Administratif.
+               
+            6. [AMENDE] Amende administrative pour fausse déclaration ou omission délibérée.
+               - Context : Pénalité financière pour fraude.
+               - Procédure : Tribunal Administratif direct (2 mois).
+               
+            7. [RECOUV] Recouvrement d’une créance assise et liquidée par une collectivité territoriale (ex: indu RSA du Département).
+               - Context : Titre exécutoire, opposition à contrainte.
+               - Procédure : Tribunal Administratif (2 mois) pour contester le bien-fondé.
+               
+            8. [ACADINASS] Suspension des allocations familiales pour inassiduité par l'inspecteur d'academie.
+               - Context : Absentéisme scolaire sanctionné par l'académie.
+               
+            9. [CAFINASS] Suspension des allocations familiales pour inassiduité par la CAF.
+               - Context : Suite à la décision académique.
+               
+            10. [MAJO] Majoration forfaitaire de 10% de l’indu pour réparation du préjudice.
+                - Context : Pénalité sur indu frauduleux.
+                - Procédure : Tribunal Judiciaire.
+                
+            11. [AAH] Allocation aux adultes handicapés.
+                - Procédure : Recours amiable MDPH/CRA puis Tribunal Judiciaire.
+                
+            12. [AEEH] Allocation d’éducation de l’enfant handicapé.
+                - Procédure : Recours amiable MDPH/CRA puis Tribunal Judiciaire.
+                
+            13. [AJPP] Allocation journalière de présence parentale.
+                - Procédure : Recours amiable CMRA/CRA puis Tribunal Judiciaire.
+                
+            14. [AJPA] Allocation journalière du proche aidant.
+                - Procédure : Recours amiable CRA puis Tribunal Judiciaire.
+                
+            15. [AVPF] Assurance vieillesse des parents au foyer.
+                - Context : Cotisation retraite pour aidant familial/parent au foyer.
+                - Procédure : Recours amiable MDPH/CRA puis Tribunal Judiciaire.
+                
+            16. [AUTRES] Autres prestations ou indéterminé.
+                - Context : Allocations familiales, ARS, PAJE, ou "Dette CAF"/"Trop perçu" sans précision du type d'aide.
+            """
         
-        1. [APL] Aides personnelles au logement (APLs) et Prime de déménagement.
-           - Procédure : Recours amiable devant la CRA (2 mois) puis Tribunal Administratif (2 mois).
-           
-        2. [RSA] Revenu de solidarité active.
-           - Procédure : Recours amiable devant le Président du Conseil Départemental (2 mois) puis Tribunal Administratif (2 mois).
-           
-        3. [PPA] Prime d’activité.
-           - Procédure : Recours amiable devant la CRA (2 mois) puis Tribunal Administratif (2 mois).
-           
-        4. [NOEL] Primes de Noël (Primes exceptionnelles de fin d’année).
-           - Procédure : Recours amiable devant le Directeur de la Caf puis Tribunal Administratif.
-           
-        5. [AUUVVC] Aide universelle d’urgence aux victimes de violence conjugale.
-           - Procédure : Recours amiable devant la CRA puis Tribunal Administratif.
-           
-        6. [AMENDE] Amende administrative pour fausse déclaration ou omission délibérée.
-           - Context : Pénalité financière pour fraude.
-           - Procédure : Tribunal Administratif direct (2 mois).
-           
-        7. [RECOUV] Recouvrement d’une créance assise et liquidée par une collectivité territoriale (ex: indu RSA du Département).
-           - Context : Titre exécutoire, opposition à contrainte.
-           - Procédure : Tribunal Administratif (2 mois) pour contester le bien-fondé.
-           
-        8. [ACADINASS] Suspension des allocations familiales pour inassiduité par l'inspecteur d'academie.
-           - Context : Absentéisme scolaire sanctionné par l'académie.
-           
-        9. [CAFINASS] Suspension des allocations familiales pour inassiduité par la CAF.
-           - Context : Suite à la décision académique.
-           
-        10. [MAJO] Majoration forfaitaire de 10% de l’indu pour réparation du préjudice.
-            - Context : Pénalité sur indu frauduleux.
-            - Procédure : Tribunal Judiciaire.
-            
-        11. [AAH] Allocation aux adultes handicapés.
-            - Procédure : Recours amiable MDPH/CRA puis Tribunal Judiciaire.
-            
-        12. [AEEH] Allocation d’éducation de l’enfant handicapé.
-            - Procédure : Recours amiable MDPH/CRA puis Tribunal Judiciaire.
-            
-        13. [AJPP] Allocation journalière de présence parentale.
-            - Procédure : Recours amiable CMRA/CRA puis Tribunal Judiciaire.
-            
-        14. [AJPA] Allocation journalière du proche aidant.
-            - Procédure : Recours amiable CRA puis Tribunal Judiciaire.
-            
-        15. [AVPF] Assurance vieillesse des parents au foyer.
-            - Context : Cotisation retraite pour aidant familial/parent au foyer.
-            - Procédure : Recours amiable MDPH/CRA puis Tribunal Judiciaire.
-            
-        16. [AUTRES] Autres prestations (allocations familiales, ARS, PAJE…).
-        """
-        
+        # Prepare file content context if available
+        files_context = ""
+        if files_content:
+            files_context = "\n\n**Contenu des pièces jointes :**\n"
+            for i, content in enumerate(files_content):
+                # Truncate content to avoid token overflow? Let's limit to 2000 chars per file for safety
+                files_context += f"[Document {i+1}]: {content[:3000]}...\n\n"
+
         prompt = f"""
-        Tu es un assistant juridique expert en droit administratif français.
-        Ton but est d'analyser la description d'un dossier juridique pour déterminer l'étape (Stage) et les prestations (Benefits) concernées.
+        CONTEXTE :
+        Tu es avocat spécialisé en droit administratif (CAF).
+        Tu rédiges pour le compte de Maître Ilan BRUN-VARGAS.
         
-        Utilise impérativement la "REFERENCE DES PRESTATIONS ET PROCEDURES" ci-dessous pour identifier les codes précis.
-        
+        BASE DE CONNAISSANCES DU CABINET (Ce que nous traitons ou non) :
         {knowledge_base}
         
-        **Description du dossier à analyser :**
+        DESCRIPTION DU CAS PAR LE CLIENT :
         "{description}"
         
-        **Tâche 1 : Déterminer l'étape (Stage)**
-        Choisis UNE seule valeur parmi :
-        - 'Contradictory' : Phase initiale (demande, contrôle, lettre d'information, demande de remise de dette, échange avant décision définitive).
-        - 'RAPO' : Recours Administratif Préalable Obligatoire (Saisine de la CRA, du Président du Département, ou Directeur CAF). Le client *conteste* une décision administrative mais n'est pas encore au tribunal.
-        - 'Litigation' : Contentieux (Recours déposé au Tribunal Administratif ou Judiciaire).
+        {files_context}
         
-        **Tâche 2 : Déterminer les Prestations (Benefits)**
-        Identifie TOUS les codes applicables (ex: RSA, APL, AMENDE...) en te basant sur les mots-clés et contextes de la référence.
+        TÂCHE :
+        Analysez les documents et la description pour :
+        1. Identifier l'étape précise de la procédure (stage).
+        2. Identifier TOUTES les prestations concernées (RSA, APL, AAH, etc.). Il peut y en avoir plusieurs.
         
-        **Format de réponse attendu (JSON uniquement) :**
+        RÈGLES DE CLASSIFICATION (STAGE) :
+        1. Contradictory : Phase initiale (demande, contrôle, lettre d'information, invitation à observations, pas d'indu formel encore).
+        2. RAPO : Recours Administratif Préalable Obligatoire. Notification d'indu, révision de droits, délai de 2 mois ouvert pour CRA/Président CD.
+        3. Litigation : RAPO rejeté (explicite ou implicite), saisine Tribunal Administratif.
+        
+        RÈGLES D'ACCEPTATION :
+        Regardez la colonne "Reference" dans la Base de Connaissances pour voir si nous traitons ce type de dossier.
+        
+        Retournez UNIQUEMENT le JSON suivant :
         {{
-            "stage": "VALEUR_STAGE",
-            "benefits": ["CODE1", "CODE2"]
+            "stage": "Contradictory" | "RAPO" | "Litigation",
+            "prestations": [
+                {{ "name": "CODE_PRESTATION", "isAccepted": true | false }}
+            ]
         }}
         """
         
         try:
-            response = await self.generate(prompt, temperature=0.0)
+            response = await self.generate(prompt, temperature=0.1)
             
             # Clean response to ensure it's valid JSON
             import json
@@ -447,31 +331,92 @@ Provide a comprehensive answer based on the context. Include specific citations 
                 
                 # Validate stage
                 stage = result.get('stage', 'Contradictory')
-                if stage not in stages_list:
-                    # Fallback mapping or default
-                    if 'rapo' in stage.lower(): stage = 'RAPO'
-                    elif 'litige' in stage.lower() or 'tribunal' in stage.lower(): stage = 'Litigation'
-                    else: stage = 'Contradictory'
+                # Map back if LLM uses slightly different terms (though prompt says Contradictory/RAPO/Litigation)
+                if stage.upper() == 'CONTROL': stage = 'Contradictory' # Handle User's screenshot term just in case
                 
-                # Validate benefits
-                benefits = result.get('benefits', [])
-                valid_benefits = [b for b in benefits if b in benefits_list]
-                # If LLM found benefits but they aren't in our strict list, try to map them or keep 'AUTRES'
-                if not valid_benefits and benefits:
-                     # Check if 'AUTRES' was returned
-                     if 'AUTRES' in benefits: valid_benefits.append('AUTRES')
+                if stage not in stages_list and stage != 'Contradictory':
+                     # Fallback
+                     if 'RAPO' in stage.upper(): stage = 'RAPO'
+                     elif 'LITIGATION' in stage.upper() or 'TRIBUNAL' in stage.upper(): stage = 'Litigation'
+                     else: stage = 'Contradictory'
+                
+                # Extract benefits list from the new object format
+                raw_prestations = result.get('prestations', [])
+                valid_benefits = []
+                for p in raw_prestations:
+                    # p is { "name": "RSA", "isAccepted": true }
+                    name = p.get('name', '').upper()
+                    if name in benefits_list:
+                        valid_benefits.append(name)
+                    # Handle "AUTRES" mapping if needed
+                    elif "AUTRE" in name:
+                        if "AUTRES" not in valid_benefits: valid_benefits.append("AUTRES")
                 
                 return {
                     "stage": stage,
                     "benefits": valid_benefits
                 }
             else:
-                print(f"[LLM Analysis] Could not parse JSON from response: {response}")
-                return {"stage": "Contradictory", "benefits": []}
+                print(f"[LLM Analysis] Could not parse JSON from response. Falling back to heuristics.")
+                return self._heuristic_analysis(description)
                 
         except Exception as e:
-            print(f"[LLM Analysis] Error during analysis: {e}")
-            return {"stage": "Contradictory", "benefits": []}
+            print(f"[LLM Analysis] Error: {e}. Falling back to heuristics.")
+            return self._heuristic_analysis(description)
+                
+        except Exception as e:
+            print(f"[LLM Analysis] Error during analysis: {e}. Falling back to heuristics.")
+            return self._heuristic_analysis(description)
+
+    def _heuristic_analysis(self, description: str) -> Dict:
+        """Fallback method using keywords if LLM fails."""
+        desc_upper = description.upper()
+        
+        # 1. Detect Stage
+        stage = "Contradictory" # Default
+        if "TRIBUNAL" in desc_upper or "JUGEMENT" in desc_upper or "CONTENTIEUX" in desc_upper:
+            stage = "Litigation"
+        elif "CRA" in desc_upper or "RECOURS" in desc_upper or "COMMISSION" in desc_upper or "CONTESTATION" in desc_upper:
+            stage = "RAPO"
+            
+        # 2. Detect Benefits
+        benefits = []
+        keywords = {
+            "RSA": "RSA",
+            "REVENU DE SOLIDARITE": "RSA",
+            "APL": "APL",
+            "ALS": "APL",
+            "LOGEMENT": "APL",
+            "PPA": "PPA",
+            "PRIME D'ACTIVITE": "PPA",
+            "AAH": "AAH",
+            "HANDICAP": "AAH",
+            "AEEH": "AEEH",
+            "ENFANT": "AUTRES", # Generic
+            "AJPP": "AJPP",
+            "AJPA": "AJPA",
+            "AVPF": "AVPF",
+            "RETRAITE": "AVPF",
+            "NOEL": "NOEL",
+            "PRIME DE NOEL": "NOEL",
+            "AMENDE": "AMENDE",
+            "FRAUDE": "AMENDE",
+            "INDU": "AUTRES",
+            "DETTE": "AUTRES",
+            "TROP PERCU": "AUTRES",
+            "CAF": "AUTRES"
+        }
+        
+        for key, code in keywords.items():
+            if key in desc_upper:
+                if code not in benefits:
+                    benefits.append(code)
+        
+        # Deduplicate 'AUTRES' if we have specific ones? 
+        # Actually logic says if we have specifics, we might still have AUTRES if vague terms are present.
+        # But let's keep it simple.
+        
+        return {"stage": stage, "benefits": benefits}
 
 # Global instance
 llm_service = LLMService()

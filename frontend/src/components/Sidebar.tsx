@@ -47,17 +47,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   useEffect(() => {
     if (isFilterOpen) {
       setTempStages(selectedStages);
-
-      // Handle the logic where empty selectedBenefits means "Effective All" visually if you want, 
-      // or just sync exactly what is selected. The requirement says:
-      // "If ALL selected, all benefits are considered selected."
-      // If the parent passes [], it usually means NO filter (so all).
-      // Let's assume parent state [] means ALL.
-      if (selectedBenefits.length === 0) {
-        setTempBenefits([...BENEFIT_TYPES]);
-      } else {
-        setTempBenefits(selectedBenefits);
-      }
+      setTempBenefits(selectedBenefits);
     }
   }, [isFilterOpen, selectedStages, selectedBenefits]);
 
@@ -102,13 +92,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
     onStageChange(tempStages);
 
     // 2. Benefits
-    // If current temp is full list, we pass empty array to signify "No filter" (All)
-    // or we pass the full list. Based on previous implementation logic:
-    if (tempBenefits.length === BENEFIT_TYPES.length || tempBenefits.length === 0) {
-      onBenefitChange([]);
-    } else {
-      onBenefitChange(tempBenefits);
-    }
+    onBenefitChange(tempBenefits);
 
     setIsFilterOpen(false);
   };

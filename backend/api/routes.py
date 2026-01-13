@@ -234,10 +234,34 @@ async def sync_gmail_for_case(case_id: str, search_query: str = None, legacy_ide
             phone = form_data.get('PHONE', "")
             description = form_data.get('DESCRIPTION', content['body'])
                 
+            # Extract text from attachments for better analysis
+            files_content_for_llm = []
+            if attachments:
+                print(f"[SYNC] Extracting text from {len(attachments)} attachments for analysis...")
+                for att in attachments:
+                    try:
+                        mime = att.get('mimeType', '')
+                        if 'pdf' in mime or 'application/pdf' in mime:
+                             import io
+                             from pypdf import PdfReader
+                             pdf_bytes = base64.b64decode(att['base64'])
+                             reader = PdfReader(io.BytesIO(pdf_bytes))
+                             text = ""
+                             for page in reader.pages:
+                                 text += page.extract_text() + "\n"
+                             if text.strip():
+                                 files_content_for_llm.append(text)
+                        elif 'text' in mime:
+                             # Plain text files
+                             text = base64.b64decode(att['base64']).decode('utf-8', errors='ignore')
+                             files_content_for_llm.append(text)
+                    except Exception as e:
+                        print(f"[SYNC] Failed to extract text from attachment: {e}")
+
             # Use Gemini to detect stage and type using the new dedicated method
             print(f"[SYNC] Calling Gemini to analyze case stage/type...")
             try:
-                analysis = await llm_service.analyze_case_stage_and_benefits(description)
+                analysis = await llm_service.analyze_case_stage_and_benefits(description, files_content=files_content_for_llm)
                 detected_stage = analysis.get("stage", "RAPO")
                 detected_prestations = analysis.get("benefits", [])
                 print(f"[SYNC] Gemini Analysis Result: Stage={detected_stage}, Benefits={detected_prestations}")
@@ -501,7 +525,7 @@ async def process_gmail_sync(days: int, db):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/document/{submission_id}/download")
-async def download_document(submission_id: str, db = Depends(get_db)):
+async def download_document(submission_id: str, inline: bool = False, db = Depends(get_db)):
     """Download the original file for a submission."""
     import base64
     import io
@@ -517,10 +541,13 @@ async def download_document(submission_id: str, db = Depends(get_db)):
             raise HTTPException(status_code=404, detail="File content not available")
             
         file_content = base64.b64decode(doc["file_content"])
+        
+        disposition = "inline" if inline else "attachment"
+        
         return StreamingResponse(
             io.BytesIO(file_content),
             media_type=doc.get("mime_type", "application/octet-stream"),
-            headers={"Content-Disposition": f"attachment; filename={doc['filename']}"}
+            headers={"Content-Disposition": f"{disposition}; filename={doc['filename']}"}
         )
     except Exception as e:
         print(f"Download error: {e}")

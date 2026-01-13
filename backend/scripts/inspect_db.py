@@ -3,7 +3,7 @@ import sys
 from pathlib import Path
 
 # Add parent directory to path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 from backend.database.mongo import get_database, MongoDB
 
@@ -22,6 +22,8 @@ async def inspect_db():
         print(f"Case ID: {sub['case_id']}")
         print(f"Email: '{sub['email']}'")
         print(f"Doc: {sub.get('document', {}).get('filename')}")
+        print(f"Stage: {sub.get('stage')}")
+        print(f"Benefits: {sub.get('prestations_detected')}")
         print(f"Description start: {sub['description'][:50]}...")
         if 'secretaire' in sub['email']:
             print("⚠️  BAD RECORD DETECTED!")
