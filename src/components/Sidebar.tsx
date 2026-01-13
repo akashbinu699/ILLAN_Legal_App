@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Search, ChevronDown } from 'lucide-react';
+import { Search, Filter } from 'lucide-react';
 import type { Case, BenefitType, CaseStage } from '../types';
 import { cn } from '../utils/cn';
 
@@ -11,14 +11,14 @@ interface SidebarProps {
   onToggleUnread: (showUnread: boolean) => void;
   searchTerm: string;
   onSearchChange: (term: string) => void;
-  selectedBenefits: BenefitType[]; // Changed to array
+  selectedBenefits: BenefitType[];
   onBenefitChange: (val: BenefitType[]) => void;
-  selectedStage: CaseStage | 'All' | null;
-  onStageChange: (val: CaseStage | 'All') => void;
+  selectedStages: CaseStage[]; // Changed to array
+  onStageChange: (val: CaseStage[]) => void;
 }
 
 const BENEFIT_TYPES: BenefitType[] = [
-  'APL', 'RSA', 'PPA', 'NOEL', 'AUUVVC', 'AMENDE', 'RECOUV', 'ACADINASS', 
+  'APL', 'RSA', 'PPA', 'NOEL', 'AUUVVC', 'AMENDE', 'RECOUV', 'ACADINASS',
   'CAFINASS', 'MAJO', 'AAH', 'AEEH', 'AJPP', 'AJPA', 'AVPF', 'AUTRES'
 ];
 
@@ -32,36 +32,53 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onSearchChange,
   selectedBenefits,
   onBenefitChange,
-  selectedStage,
+  selectedStages,
   onStageChange,
 }) => {
-  // Benefit Dropdown State
-  const [isBenefitOpen, setIsBenefitOpen] = useState(false);
-  const [tempBenefits, setTempBenefits] = useState<BenefitType[]>([]);
-  const benefitRef = useRef<HTMLDivElement>(null);
+  // Filter Popover State
+  const [isFilterOpen, setIsFilterOpen] = useState(false);
+  const filterRef = useRef<HTMLDivElement>(null);
+
+  // Temporary State for Filters (applied only on "APPLY")
+  const [tempStages, setTempStages] = useState<CaseStage[]>(selectedStages);
+  const [tempBenefits, setTempBenefits] = useState<BenefitType[]>(selectedBenefits);
+
+  // Sync temp state when opening
+  useEffect(() => {
+    if (isFilterOpen) {
+      setTempStages(selectedStages);
+
+      // Handle the logic where empty selectedBenefits means "Effective All" visually if you want, 
+      // or just sync exactly what is selected. The requirement says:
+      // "If ALL selected, all benefits are considered selected."
+      // If the parent passes [], it usually means NO filter (so all).
+      // Let's assume parent state [] means ALL.
+      if (selectedBenefits.length === 0) {
+        setTempBenefits([...BENEFIT_TYPES]);
+      } else {
+        setTempBenefits(selectedBenefits);
+      }
+    }
+  }, [isFilterOpen, selectedStages, selectedBenefits]);
 
   // Close dropdown on click outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (benefitRef.current && !benefitRef.current.contains(event.target as Node)) {
-        setIsBenefitOpen(false);
+      if (filterRef.current && !filterRef.current.contains(event.target as Node)) {
+        setIsFilterOpen(false);
       }
     };
     document.addEventListener('mousedown', handleClickOutside);
     return () => document.removeEventListener('mousedown', handleClickOutside);
   }, []);
 
-  // Sync temp benefits when opening
-  useEffect(() => {
-    if (isBenefitOpen) {
-      if (selectedBenefits.length === 0) {
-        // If empty (All selected logically), fill checkboxes
-        setTempBenefits([...BENEFIT_TYPES]);
-      } else {
-        setTempBenefits(selectedBenefits);
-      }
+  const handleStageToggle = (stage: CaseStage) => {
+    if (tempStages.includes(stage)) {
+      setTempStages(tempStages.filter(s => s !== stage));
+    } else {
+      setTempStages([...tempStages, stage]);
     }
-  }, [isBenefitOpen, selectedBenefits]);
+  };
 
   const handleBenefitToggle = (type: BenefitType) => {
     if (tempBenefits.includes(type)) {
@@ -71,31 +88,38 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   };
 
-  const handleAllToggle = () => {
-    if (tempBenefits.length === BENEFIT_TYPES.length) {
-      setTempBenefits([]); // Clear all
+  const handleAllBenefitsToggle = () => {
+    const allSelected = tempBenefits.length === BENEFIT_TYPES.length;
+    if (allSelected) {
+      setTempBenefits([]); // Clear
     } else {
-      setTempBenefits([...BENEFIT_TYPES]); // Select all
+      setTempBenefits([...BENEFIT_TYPES]);
     }
   };
 
-  const handleApplyBenefits = () => {
-    // If all are selected, or none (which defaults to all), pass empty array to App (optimisation/logic)
+  const handleApply = () => {
+    // 1. Stage
+    onStageChange(tempStages);
+
+    // 2. Benefits
+    // If current temp is full list, we pass empty array to signify "No filter" (All)
+    // or we pass the full list. Based on previous implementation logic:
     if (tempBenefits.length === BENEFIT_TYPES.length || tempBenefits.length === 0) {
-        onBenefitChange([]);
+      onBenefitChange([]);
     } else {
-        onBenefitChange(tempBenefits);
+      onBenefitChange(tempBenefits);
     }
-    setIsBenefitOpen(false);
+
+    setIsFilterOpen(false);
   };
 
-  const isAllChecked = tempBenefits.length === BENEFIT_TYPES.length;
+  const isAllBenefitsChecked = tempBenefits.length === BENEFIT_TYPES.length;
 
   return (
-    <div className="w-80 h-full bg-white border-r border-gray-200 flex flex-col flex-shrink-0">
+    <div className="w-80 h-full bg-white border-r border-gray-200 flex flex-col flex-shrink-0 relative">
       {/* Search & Filter Header */}
-      <div className="p-4 border-b border-gray-100 space-y-3">
-        {/* Search */}
+      <div className="p-3 border-b border-gray-100 space-y-2">
+        {/* Row 1: Search at the top */}
         <div className="relative">
           <Search className="absolute left-3 top-2.5 h-4 w-4 text-gray-400" />
           <input
@@ -103,101 +127,114 @@ export const Sidebar: React.FC<SidebarProps> = ({
             placeholder="Search case or email"
             value={searchTerm}
             onChange={(e) => onSearchChange(e.target.value)}
-            className="w-full pl-9 pr-4 py-2 bg-gray-50 border-none rounded-md text-sm focus:ring-1 focus:ring-green-500 outline-none"
+            className="w-full pl-9 pr-4 py-2 bg-gray-50 border-none rounded-md text-sm focus:ring-1 focus:ring-green-500 outline-none placeholder-gray-400 text-gray-700"
           />
         </div>
 
-        {/* Filter Toggle & Type */}
-        <div className="flex flex-col gap-3">
-          <div className="flex items-center gap-2 w-full">
-             {/* Benefit Multi-Select */}
-             <div className="flex-1 min-w-0 relative" ref={benefitRef}>
-                <button
-                  onClick={() => setIsBenefitOpen(!isBenefitOpen)}
-                  className="w-full bg-gray-50 border border-gray-200 text-gray-700 py-1 pl-2 pr-2 rounded focus:outline-none focus:ring-1 focus:ring-green-500 text-xs font-medium flex justify-between items-center"
-                >
-                  <span>Benefit</span>
-                  <ChevronDown className="h-3 w-3 text-gray-500" />
-                </button>
-                
-                {isBenefitOpen && (
-                  <div className="absolute top-full left-0 mt-1 w-48 bg-white border border-gray-200 rounded-md shadow-lg z-50 flex flex-col">
-                    <div className="max-h-60 overflow-y-auto p-2 space-y-1">
-                      {/* All Option */}
-                      <label className="flex items-center space-x-2 p-1 hover:bg-gray-50 rounded cursor-pointer">
-                        <input 
-                          type="checkbox" 
-                          checked={isAllChecked}
-                          onChange={handleAllToggle}
-                          className="rounded text-green-600 focus:ring-green-500 h-3 w-3"
-                        />
-                        <span className="text-xs font-medium text-gray-700">All</span>
-                      </label>
-                      <div className="h-px bg-gray-100 my-1"></div>
-                      {/* Individual Options */}
-                      {BENEFIT_TYPES.map(type => (
-                         <label key={type} className="flex items-center space-x-2 p-1 hover:bg-gray-50 rounded cursor-pointer">
-                           <input 
-                             type="checkbox" 
-                             checked={tempBenefits.includes(type)}
-                             onChange={() => handleBenefitToggle(type)}
-                             className="rounded text-green-600 focus:ring-green-500 h-3 w-3"
-                           />
-                           <span className="text-xs text-gray-700">{type}</span>
-                         </label>
-                      ))}
-                    </div>
-                    {/* Apply Button */}
-                    <div className="p-2 border-t border-gray-100 flex justify-end">
-                       <button
-                         onClick={handleApplyBenefits}
-                         className="px-3 py-1 bg-green-600 text-white text-xs rounded hover:bg-green-700 transition-colors"
-                       >
-                         Apply
-                       </button>
-                    </div>
+        {/* Row 2: Filter Button + Read/Unread Toggle */}
+        <div className="flex items-center gap-2">
+
+          {/* Filter Button with Popover */}
+          <div className="relative" ref={filterRef}>
+            <button
+              onClick={() => setIsFilterOpen(!isFilterOpen)}
+              className={cn(
+                "p-2 rounded-md border text-gray-500 hover:text-gray-700 hover:bg-gray-50 transition-colors",
+                isFilterOpen || (selectedStages.length > 0 || selectedBenefits.length > 0) ? "border-green-500 text-green-600 bg-green-50" : "border-gray-200"
+              )}
+            >
+              <Filter className="h-4 w-4" />
+            </button>
+
+            {/* The Popover */}
+            {isFilterOpen && (
+              <div className="absolute top-full left-0 mt-2 w-64 bg-white border border-gray-200 rounded-lg shadow-xl z-50 p-4 flex flex-col gap-4">
+
+                {/* Section: Stage */}
+                <div>
+                  <h4 className="text-xs font-bold text-gray-900 mb-2 uppercase tracking-wide">Stage</h4>
+                  <div className="flex flex-wrap gap-2">
+                    {(['Contradictory', 'RAPO', 'Litigation'] as CaseStage[]).map(stage => (
+                      <button
+                        key={stage}
+                        onClick={() => handleStageToggle(stage)}
+                        className={cn(
+                          "px-3 py-1 rounded-full text-xs font-medium border transition-colors",
+                          tempStages.includes(stage)
+                            ? "bg-green-100 border-green-200 text-green-800"
+                            : "bg-white border-gray-200 text-gray-600 hover:border-gray-300"
+                        )}
+                      >
+                        {stage}
+                      </button>
+                    ))}
                   </div>
-                )}
-             </div>
-             
-             {/* Stage Dropdown */}
-             <div className="flex-1 min-w-0">
-                <div className="relative w-full">
-                     <select
-                      value={selectedStage === 'All' ? '' : selectedStage || ''}
-                      onChange={(e) => onStageChange(e.target.value as CaseStage | 'All')}
-                      className="w-full appearance-none bg-gray-50 border border-gray-200 text-gray-700 py-1 pl-2 pr-6 rounded focus:outline-none focus:ring-1 focus:ring-green-500 text-xs font-medium cursor-pointer relative z-10 bg-transparent"
-                    >
-                      <option value="" disabled hidden>Stage</option>
-                      <option value="All">All</option>
-                      <option value="Contradictory">Contradictory</option>
-                      <option value="RAPO">RAPO</option>
-                      <option value="Litigation">Litigation</option>
-                    </select>
-                     {/* Custom Arrow */}
-                    <div className="absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none z-0">
-                      <ChevronDown className="h-3 w-3 text-gray-500" />
-                    </div>
                 </div>
-             </div>
+
+                {/* Section: Benefits */}
+                <div>
+                  <h4 className="text-xs font-bold text-gray-900 mb-2 uppercase tracking-wide">Benefits</h4>
+                  <div className="flex flex-wrap gap-2 max-h-48 overflow-y-auto">
+                    <button
+                      onClick={handleAllBenefitsToggle}
+                      className={cn(
+                        "px-3 py-1 rounded-full text-xs font-medium border transition-colors",
+                        isAllBenefitsChecked
+                          ? "bg-green-100 border-green-200 text-green-800"
+                          : "bg-white border-gray-200 text-gray-600 hover:border-gray-300"
+                      )}
+                    >
+                      ALL
+                    </button>
+                    {BENEFIT_TYPES.map(type => (
+                      <button
+                        key={type}
+                        onClick={() => handleBenefitToggle(type)}
+                        className={cn(
+                          "px-3 py-1 rounded-full text-xs font-medium border transition-colors",
+                          tempBenefits.includes(type)
+                            ? "bg-green-100 border-green-200 text-green-800"
+                            : "bg-white border-gray-200 text-gray-600 hover:border-gray-300"
+                        )}
+                      >
+                        {type}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {/* Apply Button */}
+                <div className="pt-2 border-t border-gray-100">
+                  <button
+                    onClick={handleApply}
+                    className="w-full py-2 bg-green-600 text-white text-xs font-bold rounded-md hover:bg-green-700 transition-colors uppercase tracking-wide"
+                  >
+                    Apply
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
 
-          <div className="flex bg-gray-100 rounded-lg p-1 w-full relative">
+          {/* Read/Unread Toggle */}
+          <div className="flex items-center justify-end flex-1 gap-1">
             <button
               onClick={() => onToggleUnread(false)}
               className={cn(
-                "flex-1 py-1 rounded-md text-xs font-medium transition-all text-center z-10",
-                !showUnreadOnly ? "bg-green-600 text-white shadow-sm" : "bg-transparent text-gray-500 hover:text-gray-700"
+                "px-3 py-1 rounded text-[10px] font-medium transition-all text-center border mr-1",
+                !showUnreadOnly ? "bg-lmGreenDark bg-[#166534] text-white border-[#166534]" : "bg-white text-gray-500 border-gray-200 hover:text-gray-700"
               )}
+              style={{ backgroundColor: !showUnreadOnly ? 'rgb(22, 101, 52)' : 'white' }}
             >
               Read
             </button>
             <button
               onClick={() => onToggleUnread(true)}
               className={cn(
-                "flex-1 py-1 rounded-md text-xs font-medium transition-all text-center z-10",
-                showUnreadOnly ? "bg-green-600 text-white shadow-sm" : "bg-transparent text-gray-500 hover:text-gray-700"
+                "px-3 py-1 rounded text-[10px] font-medium transition-all text-center border",
+                showUnreadOnly ? "bg-lmGreenDark bg-[#166534] text-white border-[#166534]" : "bg-white text-gray-500 border-gray-200 hover:text-gray-700"
               )}
+              style={{ backgroundColor: showUnreadOnly ? 'rgb(22, 101, 52)' : 'white' }}
             >
               Unread
             </button>
@@ -212,11 +249,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
             key={c.id}
             onClick={() => onSelectCase(c.id)}
             className={cn(
-              "p-3 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors",
-              selectedCaseId === c.id ? "bg-green-50 border-l-4 border-l-lm-active" : "border-l-4 border-l-transparent"
+              "p-3 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors relative",
+              selectedCaseId === c.id ? "bg-green-50/50" : ""
             )}
           >
-            <div className="flex justify-between items-start mb-1">
+            {/* Active Indication Strip */}
+            {selectedCaseId === c.id && (
+              <div className="absolute left-0 top-0 bottom-0 w-1 bg-green-500" />
+            )}
+
+            <div className="flex justify-between items-start mb-1 pl-1">
               <div>
                 <span className="font-bold text-sm text-gray-900 block">{c.caseNumber}</span>
                 <span className="text-xs text-gray-500 block truncate max-w-[120px]" title={c.email}>{c.email}</span>
@@ -226,11 +268,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 <span className="text-[10px] text-gray-400 block">{c.time}</span>
               </div>
             </div>
-            
-            <div className="flex justify-between items-end mt-2">
+
+            <div className="flex justify-between items-end mt-2 pl-1">
               <div className="flex flex-wrap gap-1 max-w-[65%]">
                 {c.badges.map((badge, idx) => (
-                  <span 
+                  <span
                     key={idx}
                     className="px-1.5 py-0.5 rounded-full bg-red-600 text-[9px] font-bold text-white whitespace-nowrap"
                   >
@@ -238,7 +280,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   </span>
                 ))}
               </div>
-              <span className="px-2 py-0.5 bg-green-200 text-green-800 text-[10px] font-semibold rounded-full whitespace-nowrap">
+              <span className={cn(
+                "px-2 py-0.5 text-[10px] font-bold rounded-full whitespace-nowrap",
+                c.statusTag === 'RAPO' ? "bg-emerald-100 text-emerald-700" :
+                  c.statusTag === 'Litigation' ? "bg-slate-800 text-white" :
+                    "bg-green-200 text-green-800"
+              )}>
                 {c.statusTag}
               </span>
             </div>
@@ -248,4 +295,3 @@ export const Sidebar: React.FC<SidebarProps> = ({
     </div>
   );
 };
-
