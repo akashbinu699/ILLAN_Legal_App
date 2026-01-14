@@ -9,8 +9,7 @@ interface CaseHeaderProps {
   onViewChange: (view: ViewMode) => void;
   onCaseStageChange: (stage: CaseStage) => void;
   onFeedbackToggle: () => void;
-  onSyncGmail: () => void;
-  syncLoading: boolean;
+
 }
 
 export const CaseHeader: React.FC<CaseHeaderProps> = ({
@@ -19,8 +18,7 @@ export const CaseHeader: React.FC<CaseHeaderProps> = ({
   onViewChange,
   onCaseStageChange,
   onFeedbackToggle,
-  onSyncGmail,
-  syncLoading,
+
 }) => {
   const caseStages: CaseStage[] = ['Contradictory', 'RAPO', 'Litigation'];
 
@@ -98,16 +96,7 @@ export const CaseHeader: React.FC<CaseHeaderProps> = ({
         <div className="flex items-center gap-3 justify-end min-w-0" style={{ flex: '0 0 auto' }}>
 
 
-          <button
-            onClick={onSyncGmail}
-            disabled={syncLoading}
-            className={cn(
-              "whitespace-nowrap font-medium transition-colors text-blue-600 hover:text-blue-800 disabled:opacity-50",
-              syncLoading && "animate-pulse"
-            )}
-          >
-            {syncLoading ? 'Syncing...' : 'Sync Gmail'}
-          </button>
+
 
           <button
             onClick={() => onViewChange('RAG query')}

@@ -63,6 +63,16 @@ class DocumentSchema(BaseModel):
     filename: Optional[str] = None
     mime_type: Optional[str] = None
 
+class EmailMessageSchema(BaseModel):
+    """Individual email message in case timeline"""
+    id: str
+    subject: str
+    body: str
+    from_email: str
+    created_at: datetime
+    gmail_message_id: Optional[str] = None
+
+
 class CaseResponse(BaseModel):
     id: str # Changed Int to Str
     case_id: str
@@ -80,6 +90,7 @@ class CaseResponse(BaseModel):
     emailPrompt: Optional[str] = None
     appealPrompt: Optional[str] = None
     documents: List[DocumentSchema] = []
+    emails: List[EmailMessageSchema] = []  # Email timeline
     
     class Config:
         from_attributes = True

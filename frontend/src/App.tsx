@@ -231,6 +231,46 @@ Je me permets de vous contacter afin de contester.
     });
   };
 
+  const [isGenerating, setIsGenerating] = useState(false);
+
+  const handleGenerateDraft = async () => {
+    if (!selectedCaseId) return;
+    try {
+      setIsGenerating(true);
+      // Calls backend to generate drafts
+      const updatedCase = await api.generateDrafts(selectedCaseId);
+
+      // Update local state with new drafts
+      setDrafts(prev => {
+        const currentCaseDrafts = prev[selectedCaseId] || {
+          email: getDraftDefaults('email'),
+          letter: getDraftDefaults('letter')
+        };
+
+        return {
+          ...prev,
+          [selectedCaseId]: {
+            email: {
+              input: updatedCase.emailPrompt || currentCaseDrafts.email.input,
+              output: updatedCase.generatedEmailDraft || currentCaseDrafts.email.output
+            },
+            letter: {
+              input: updatedCase.appealPrompt || currentCaseDrafts.letter.input,
+              // Map generatedAppealDraft to letter output
+              output: updatedCase.generatedAppealDraft || currentCaseDrafts.letter.output
+            }
+          }
+        };
+      });
+      alert("Draft generated successfully!");
+    } catch (err) {
+      console.error("Failed to generate draft", err);
+      alert("Failed to generate draft. Please try again.");
+    } finally {
+      setIsGenerating(false);
+    }
+  };
+
   // Render content logic based on viewMode
   const renderContent = () => {
     if (!selectedCase) return <div className="p-10">No case selected</div>;
@@ -258,6 +298,8 @@ Je me permets de vous contacter afin de contester.
           onInputChange={(val) => handleDraftUpdate('input', val)}
           outputContent={currentDraft.output}
           onOutputChange={(val) => handleDraftUpdate('output', val)}
+          onGenerate={handleGenerateDraft}
+          isGenerating={isGenerating}
         />
       );
     }
@@ -292,6 +334,21 @@ Je me permets de vous contacter afin de contester.
         </div>
 
         <div className="flex items-center gap-4">
+          <button
+            onClick={handleSyncGmail}
+            disabled={syncLoading}
+            className={`flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition-colors ${syncLoading ? 'opacity-70 cursor-wait' : 'hover:bg-white/10 text-white'}`}
+          >
+            <svg className={`w-4 h-4 ${syncLoading ? 'animate-spin' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              {syncLoading ? (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 2v2m0 16v2m-8-6h2m10 0h2m-3-10l1.5-1.5M4.5 9.5l-1.5 1.5m14.5 4.5l-1.5 1.5M4.5 14.5l-1.5-1.5"></path>
+              ) : (
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+              )}
+            </svg>
+            Sync Gmail
+          </button>
+
           <nav className="flex bg-white/20 rounded-lg p-1">
             <button
               onClick={() => setMainView('CLIENT')}
@@ -406,8 +463,7 @@ Je me permets de vous contacter afin de contester.
                       onViewChange={setViewMode}
                       onCaseStageChange={handleUpdateCaseStage}
                       onFeedbackToggle={handleFeedbackToggle}
-                      onSyncGmail={handleSyncGmail}
-                      syncLoading={syncLoading}
+
                     />
 
                     <div className="flex-1 overflow-hidden relative bg-white">

@@ -126,6 +126,17 @@ export const api = {
             throw new Error(error.detail || 'Global Sync failed');
         }
         return response.json();
+    },
+
+    async generateDrafts(caseId: string) {
+        const response = await fetch(`${API_BASE_URL}/case/${caseId}/generate-drafts`, {
+            method: 'POST',
+        });
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Draft generation failed');
+        }
+        return response.json();
     }
 };
 

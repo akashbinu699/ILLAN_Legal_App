@@ -20,7 +20,27 @@ class LLMService:
     def __init__(self):
         self.local_model = None
         self.use_local = bool(settings.local_llm_path and os.path.exists(settings.local_llm_path))
+        print("!!! LLM SERVICE INITIALIZED - NEW CODE LOADED !!!")
+        print("!!! Model list should NOT include 1.5-pro !!!")
         
+        # Load Knowledge Base
+        self.knowledge_base = ""
+        try:
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            kb_path = os.path.join(current_dir, '..', 'knowledge_base.md')
+            if os.path.exists(kb_path):
+                with open(kb_path, 'r', encoding='utf-8') as f:
+                    self.knowledge_base = f.read()
+                print(f"[LLM Service] Loaded external knowledge base from {kb_path} ({len(self.knowledge_base)} chars)")
+            else:
+                print(f"[LLM Service] Knowledge base file not found at {kb_path}")
+        except Exception as e:
+            print(f"[LLM Service] Error reading knowledge base file: {e}")
+
+        # Default fallback if empty
+        if not self.knowledge_base:
+            self.knowledge_base = "**Reference default knowledge base**"
+
         # TODO: Initialize local LLM (gpt-oss-20b) if available
         # This requires transformers library and model loading
         if self.use_local:
@@ -63,36 +83,44 @@ class LLMService:
             # Configure Gemini
             genai.configure(api_key=settings.gemini_api_key)
             
-            # Use Gemini 2.0 Flash (or fallback to 1.5 Pro if 2.0 not available)
-            model_name = "gemini-2.0-flash-exp"
-            try:
-                model = genai.GenerativeModel(model_name)
-            except Exception:
-                # Fallback to 1.5 Pro if 2.0 not available
-                model_name = "gemini-1.5-pro"
-                model = genai.GenerativeModel(model_name)
+            models_to_try = [
+                "gemini-2.0-flash",
+                "gemini-2.5-flash",
+                "gemini-2.0-flash-exp",
+                "gemini-2.0-flash-lite-preview-02-05"
+            ]
             
-            print(f"[LLM Service] Using Gemini model: {model_name}")
-            
-            # Generate content
-            # Gemini uses system instruction in generation_config
-            generation_config = {
-                "temperature": temperature,
-                "max_output_tokens": max_tokens,
-            }
-            
-            # Combine system and user prompt
-            full_prompt = f"""You are a legal assistant helping with French administrative law cases.
+            last_error = None
+            for model_name in models_to_try:
+                try:
+                    print(f"[LLM Service] Attempting simple check with Gemini model: {model_name}")
+                    model = genai.GenerativeModel(model_name)
+                    
+                    # Generate content
+                    generation_config = {
+                        "temperature": temperature,
+                        "max_output_tokens": max_tokens,
+                    }
+                    
+                    full_prompt = f"""You are a legal assistant helping with French administrative law cases.
 
 {prompt}"""
+                    
+                    response = model.generate_content(
+                        full_prompt,
+                        generation_config=generation_config
+                    )
+                    
+                    print(f"[LLM Service] Gemini API call successful with {model_name}!")
+                    return response.text
+                    
+                except Exception as e:
+                    print(f"[LLM Service] Failed with {model_name}: {str(e)}")
+                    last_error = e
+                    continue
             
-            response = model.generate_content(
-                full_prompt,
-                generation_config=generation_config
-            )
-            
-            print(f"[LLM Service] Gemini API call successful!")
-            return response.text
+            # If all failed
+            raise last_error if last_error else Exception("All Gemini models failed")
             
         except Exception as e:
             error_type = type(e).__name__
@@ -122,15 +150,48 @@ class LLMService:
             return response.text
 
         # List of models to try
-        models = ["gemini-1.5-flash", "gemini-2.0-flash-exp", "gemini-1.5-pro"]
+        # Updated based on user's available models and quota issues
+        # List of models to try
+        # Updated based on user's available models and quota issues
+        # Prioritize 2.0/2.5, but fallback to 1.5-flash (reliable free tier)
+        models = [
+            "gemini-2.0-flash",
+            "gemini-2.5-flash",
+            "gemini-2.0-flash-exp",
+            "gemini-2.0-flash-lite-preview-02-05"
+        ]
         
+        import time
         last_error = None
+        
         for m in models:
             try:
-                return try_generate(m)
+                # Simple retry logic for 429 (Rate Limit)
+                max_retries = 2
+                for attempt in range(max_retries):
+                    try:
+                        result = try_generate(m)
+                        print(f"[LLM Service] SUCCEEDED with {m}")
+                        return result
+                    except Exception as inner_e:
+                        # Check if it's a rate limit error
+                        if "429" in str(inner_e):
+                            # If it's the last attempt, don't swallow it -> raise to outer loop
+                            if attempt == max_retries - 1:
+                                raise inner_e
+                                
+                            print(f"[LLM Service] 429 Rate Limit on {m}, attempt {attempt+1}. Waiting 2s...")
+                            time.sleep(2)
+                            continue # Try again
+                        else:
+                            raise inner_e # Re-raise other errors immediately
+                            
             except Exception as e:
-                print(f"[LLM Service] Failed with {m}: {e}")
+                print(f"[LLM Service] FAILED with {m}: {e}")
                 last_error = e
+        
+        print(f"[LLM Service] ALL MODELS FAILED. Last error: {last_error}")
+        return f"Error: Gemini analysis failed. {last_error}"
         
         return f"Error: Gemini analysis failed. {last_error}"
     

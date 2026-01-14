@@ -382,10 +382,12 @@ async def sync_all_gmail(
 ):
     """
     Trigger a background sync of Gmail messages.
+    Uses SIMPLIFIED logic: 1 email address = 1 case.
     Returns immediately to prevent timeout.
     """
-    background_tasks.add_task(process_gmail_sync, days, db)
-    return {"status": "started", "message": "Sync started in background. Refresh specifically to see new cases appear."}
+    from backend.services.simplified_sync import process_gmail_sync_simplified
+    background_tasks.add_task(process_gmail_sync_simplified, days, db)
+    return {"status": "started", "message": "Sync started in background (Simplified: 1 email = 1 case)."}
 
 async def process_gmail_sync(days: int, db):
     """Actual sync logic running in background."""
@@ -731,28 +733,89 @@ async def update_case(case_id: str, update: CaseUpdate, db = Depends(get_db)):
 async def generate_drafts(case_id: str, db = Depends(get_db)):
     sub = await db.submissions.find_one({"case_id": case_id})
     if not sub:
+        try:
+            from bson import ObjectId
+            sub = await db.submissions.find_one({"_id": ObjectId(case_id)})
+        except:
+            pass
+    
+    if not sub:
         raise HTTPException(status_code=404, detail="Case not found")
 
     from backend.services.llm_service import llm_service
     updates = {}
     
-    if not sub.get("generated_email_draft"):
-        prompt = f"Generate a professional email draft for a legal case.\n\nCase ID: {sub['case_id']}\nClient Email: {sub['email']}\nClient Phone: {sub['phone']}\nCase Description: {sub['description']}\nStage: {sub['stage']}\n"
-        try:
-             draft = await llm_service.generate(prompt)
-             updates["generated_email_draft"] = draft
-             updates["email_prompt"] = prompt
-        except Exception as e:
-            print(f"Error generating email: {e}")
+    # Always force generation when this endpoint is called
+    # if not sub.get("generated_email_draft"): # Removed to force update
+    
+    # Load KB
+    kb_content = llm_service.knowledge_base if hasattr(llm_service, 'knowledge_base') else ""
+    
+    email_prompt = f"""
+    CONTEXTE :
+    Tu es avocat spécialisé en droit administratif (CAF).
+    Tu rédiges pour le compte de Maître Ilan BRUN-VARGAS.
+    
+    BASE DE CONNAISSANCES :
+    {kb_content}
+    
+    INFORMATIONS DOSSIER :
+    Case ID: {sub['case_id']}
+    Client Email: {sub['email']}
+    Client Phone: {sub.get('phone', 'N/A')}
+    Description: "{sub.get('description', '')}"
+    Stage: {sub.get('stage', 'Unknown')}
+    Prestations: {sub.get('prestations_detected', [])}
+    
+    TACHE :
+    Rédige un email formel à destination de l'administration (CAF ou Département) pour initier ou suivre la contestation.
+    - Ton : Professionnel, ferme mais courtois.
+    - Objectif : Signifier que le cabinet prend en charge le dossier et conteste la décision.
+    - Format : Objet clair, corps de l'email concis.
+    """
+    try:
+            email_draft = await llm_service.generate(email_prompt)
+            updates["generated_email_draft"] = email_draft
+            updates["email_prompt"] = email_prompt
+    except Exception as e:
+        print(f"Error generating email: {e}")
+        # Don't save error to DB here or it persists! 
+        # But for now, if it fails, we assume valid error. The LLM service returns string error though.
 
-    if not sub.get("generated_appeal_draft"):
-        prompt = f"Generate a professional appeal draft for a legal case.\n\nCase ID: {sub['case_id']}\nDescription: {sub['description']}\nStage: {sub['stage']}\n"
-        try:
-             draft = await llm_service.generate(prompt)
-             updates["generated_appeal_draft"] = draft
-             updates["appeal_prompt"] = prompt
-        except Exception as e:
-            print(f"Error generating appeal: {e}")
+    # Same for Appeal Draft
+    # Force update/generation
+    
+    # Load KB (re-use)
+    kb_content = llm_service.knowledge_base if hasattr(llm_service, 'knowledge_base') else ""
+
+    prompt = f"""
+    CONTEXTE :
+    Tu es avocat spécialisé en droit administratif (CAF).
+    Tu rédiges pour le compte de Maître Ilan BRUN-VARGAS.
+    
+    BASE DE CONNAISSANCES :
+    {kb_content}
+    
+    INFORMATIONS DOSSIER :
+    Case ID: {sub['case_id']}
+    Client: {sub.get('email', '')}
+    Description: "{sub.get('description', '')}"
+    Stage: {sub.get('stage', 'Unknown')}
+    Prestations: {sub.get('prestations_detected', [])}
+    
+    TACHE :
+    Rédige un projet de lettre de recours (RAPO ou Recours Contentieux selon le stage).
+    - Si Stage = RAPO : Rédige un Recours Administratif Préalable Obligatoire à la Commission de Recours Amiable.
+    - Si Stage = Litigation : Rédige une Requête devant le Tribunal Administratif.
+    - Inclus les références juridiques pertinentes de la Base de Connaissances.
+    - Structure : Faits, Discussion Juridique, Conclusions.
+    """
+    try:
+         draft = await llm_service.generate(prompt)
+         updates["generated_appeal_draft"] = draft
+         updates["appeal_prompt"] = prompt
+    except Exception as e:
+        print(f"Error generating appeal: {e}")
 
     if updates:
         await db.submissions.update_one({"_id": sub["_id"]}, {"$set": updates})
