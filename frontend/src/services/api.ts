@@ -57,7 +57,8 @@ export const api = {
                         mime_type: doc.mime_type
                     })) : [],
                     isRead: c.status !== 'NEW',
-                    statusTag: mapStage(c.stage)
+                    statusTag: mapStage(c.stage),
+                    emails: c.emails || [] // Map email timeline
                 });
                 console.log(`[API DEBUG] Case ${c.case_id} has ${c.documents?.length || 0} documents.`);
             });

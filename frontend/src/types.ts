@@ -55,9 +55,20 @@ export interface Document {
   mime_type?: string;
 }
 
+export interface EmailMessage {
+  id: string;
+  subject: string;
+  body: string;
+  from_email: string;
+  created_at: string;
+  gmail_message_id?: string;
+}
+
 export interface Case {
   id: string;
   caseNumber: string; // e.g. "Case1234"
+  emails?: EmailMessage[]; // Added email timeline
+
   email: string;
   date: string; // "15 DEC 25"
   time: string; // "2.30pm"

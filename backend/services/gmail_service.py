@@ -86,18 +86,34 @@ class GmailService:
         return True
     
     def get_messages(self, query: str = "", max_results: int = 10) -> List[Dict]:
-        """Get messages matching query."""
+        """Get messages matching query with pagination support."""
         if not self.service:
             self.authenticate()
         
         try:
-            results = self.service.users().messages().list(
+            messages = []
+            request = self.service.users().messages().list(
                 userId='me',
                 q=query,
-                maxResults=max_results
-            ).execute()
+                maxResults=min(max_results, 500) # Process in pages
+            )
             
-            messages = results.get('messages', [])
+            while request is not None and len(messages) < max_results:
+                response = request.execute()
+                batch = response.get('messages', [])
+                if not batch:
+                    break
+                    
+                messages.extend(batch)
+                
+                # Check if we have enough
+                if len(messages) >= max_results:
+                    messages = messages[:max_results]
+                    break
+                
+                # Get next page
+                request = self.service.users().messages().list_next(request, response)
+                
             return messages
         except HttpError as error:
             print(f'An error occurred: {error}')

@@ -16,10 +16,13 @@ async def process_gmail_sync_simplified(days: int, db):
     
     try:
         # Search for new case notification emails
-        query = '(subject:"NEW LEGAL CASE" OR subject:"New Case #") -label:ILAN_PROCESSED'
+        # Search for ALL unprocessed messages, not just "New Case" subjects
+        # This ensures we catch replies like "Re: Update" or "Question"
+        query = '-label:ILAN_PROCESSED'
         
         print(f"[SYNC] Gmail query: {query}")
-        messages = gmail_service.get_messages(query=query, max_results=100)
+        # Fetch up to 200 messages to avoid timeouts, can be increased
+        messages = gmail_service.get_messages(query=query, max_results=200)
         
         if not messages:
             print("[SYNC] No new messages found.")
@@ -62,6 +65,10 @@ async def process_gmail_sync_simplified(days: int, db):
                 client_email = parsed.get('from', '')
                 if '<' in client_email:
                     client_email = client_email.split('<')[-1].replace('>', '').strip()
+            
+            # Normalize email
+            if client_email:
+                client_email = client_email.lower().strip()
             
             # Validate email (skip if empty or lawyer's own email)
             if not client_email:
@@ -225,7 +232,11 @@ async def process_single_message(full_msg, case_id, cas_number, client_email, is
     q_dict["gmail_message_id"] = msg_id
     q_dict["is_email"] = True
     q_dict["from_email"] = content['from']
-    await db.queries.insert_one(q_dict)
+    try:
+        await db.queries.insert_one(q_dict)
+        print(f"[SYNC] Saved email query for {client_email}")
+    except Exception as e:
+        print(f"[SYNC] Failed to save email query: {e}")
     
     # Process attachments
     if attachments:

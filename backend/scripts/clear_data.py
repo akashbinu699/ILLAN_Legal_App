@@ -45,15 +45,21 @@ async def clear_db():
         label_id = next((l['id'] for l in labels if l['name'] == "ILAN_PROCESSED"), None)
         
         if label_id:
-            # Find messages
-            response = gmail_service.service.users().messages().list(
-                userId='me', 
-                q='label:ILAN_PROCESSED'
-            ).execute()
-            messages = response.get('messages', [])
-            
-            if messages:
+            # Loop to find ALL messages
+            while True:
+                response = gmail_service.service.users().messages().list(
+                    userId='me', 
+                    q='label:ILAN_PROCESSED',
+                    maxResults=500
+                ).execute()
+                
+                messages = response.get('messages', [])
+                if not messages:
+                    break
+                    
                 print(f"Found {len(messages)} processed emails. Removing label...")
+                
+                # Batch modify only allows 1000 IDs, but here we process page by page
                 batch = {
                     'ids': [msg['id'] for msg in messages],
                     'removeLabelIds': [label_id]
@@ -62,9 +68,10 @@ async def clear_db():
                     userId='me',
                     body=batch
                 ).execute()
-                print("✅ 'ILAN_PROCESSED' label removed from all messages.")
-            else:
-                print("No messages found with label.")
+                print(f"✅ Removed label from batch of {len(messages)}.")
+            
+            print("✅ 'ILAN_PROCESSED' label removed from all messages.")
+
         else:
             print("Label 'ILAN_PROCESSED' not found.")
             

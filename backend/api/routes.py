@@ -45,6 +45,32 @@ def format_date_ddmmmyy(dt: datetime) -> str:
     year = dt.strftime('%y')
     return f"{day}{month}{year}"
 
+async def fetch_case_emails(primary_sub_id: str, primary_sub_email: str, primary_submitted_at, db):
+    """Fetch all email messages for a case."""
+    from backend.api.schemas import EmailMessageSchema
+    
+    # Debug print
+    # print(f"Fetching emails for case {primary_sub_id}")
+    
+    case_emails = await db.queries.find({
+        "submission_id": str(primary_sub_id),
+        "is_email": True
+    }).sort("created_at", 1).to_list(None)
+    
+    email_messages = [
+        EmailMessageSchema(
+            id=str(e["_id"]),
+            subject=e.get("query_text", "").replace("EMAIL: ", ""),
+            body=e.get("response_text", ""),
+            from_email=e.get("from_email", primary_sub_email),
+            created_at=e.get("created_at", primary_submitted_at),
+            gmail_message_id=e.get("gmail_message_id")
+        )
+        for e in case_emails
+    ]
+    
+    return email_messages
+
 @router.post("/submit", response_model=SubmissionResponse)
 async def submit_case(
     submission: SubmissionCreate,
@@ -616,10 +642,19 @@ async def get_cases(
                          mime_type=doc.get("mime_type", "application/octet-stream")
                      ))
              
+             # Fetch email timeline
+             email_messages = await fetch_case_emails(
+                 primary_sub["_id"],
+                 primary_sub["email"],
+                 primary_sub["submitted_at"],
+                 db
+             )
+
              date_formatted = format_date_ddmmmyy(primary_sub.get("submitted_at"))
              display_name = primary_sub["case_id"]
              
              cases_with_numbers.append(CaseResponse(
+                 emails=email_messages,
                  id=str(primary_sub["_id"]),
                  case_id=primary_sub["case_id"],
                  cas_number=cas_number,
