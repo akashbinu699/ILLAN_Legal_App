@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from fastapi.responses import StreamingResponse
 import io
 import os
+import zipfile
 from typing import List, Dict, Any
 import asyncio
 from backend.database.db import get_db
@@ -32,6 +33,83 @@ from backend.services.gmail_service import gmail_service
 from backend.config import settings
 
 router = APIRouter()
+
+@router.post("/sync-gmail")
+async def sync_gmail_route(db = Depends(get_db)):
+    """Sync Gmail (Trigger simplified sync)."""
+    from backend.services.simplified_sync import process_gmail_sync_simplified
+    try:
+        # Pass 7 days default and db
+        await process_gmail_sync_simplified(7, db)
+        return {"status": "success", "message": "Sync completed"}
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.get("/cases/{case_id}/download-zip")
+async def download_case_zip(case_id: str, db = Depends(get_db)):
+    """Download all case files and emails as a ZIP."""
+    # 1. Find the primary submission
+    try:
+        sub = await db.submissions.find_one({"_id": ObjectId(case_id)})
+    except:
+        sub = await db.submissions.find_one({"case_id": case_id})
+        
+    if not sub:
+        # Try finding by email grouping if passed ID is different?
+        # Fallback to case_id
+        sub = await db.submissions.find_one({"case_id": case_id})
+        
+    if not sub:
+        raise HTTPException(404, "Case not found")
+        
+    # Prepare ZIP
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        
+        # Add Main Description
+        desc = sub.get("description", "")
+        zip_file.writestr("Case_Description.txt", desc)
+        
+        # Add Emails (Queries)
+        queries = await db.queries.find({"submission_id": str(sub["_id"]), "is_email": True}).to_list(1000)
+        for idx, q in enumerate(queries):
+            subject = q.get("query_text", "No Subject").replace("EMAIL: ", "")
+            # Safe filename
+            safe_subject = "".join([c for c in subject if c.isalnum() or c in (' ', '-', '_')]).strip()
+            # Handle date
+            dt = q.get("created_at")
+            if not dt: dt = datetime.datetime.now()
+            date_str = dt.strftime("%Y%m%d_%H%M")
+            fname = f"Email_{idx+1}_{date_str}_{safe_subject}.txt"
+            
+            body = q.get("response_text", "")
+            content = f"From: {q.get('from_email')}\nDate: {dt}\nSubject: {subject}\n\n{body}"
+            zip_file.writestr(f"Emails/{fname}", content)
+            
+        # Add Documents (from this and related submissions in same group)
+        # We assume group is by 'email'
+        if sub.get("email"):
+             related_subs = await db.submissions.find({"email": sub["email"]}).to_list(1000)
+             for s in related_subs:
+                if s.get("document") and s["document"].get("file_content"):
+                    try:
+                        import base64
+                        file_data = base64.b64decode(s["document"]["file_content"])
+                        filename = s["document"].get("filename", f"doc_{s['_id']}.pdf")
+                        zip_file.writestr(f"Documents/{filename}", file_data)
+                    except Exception as e:
+                        print(f"Error adding doc to zip: {e}")
+
+    zip_buffer.seek(0)
+    filename = f"Case_{sub['case_id']}_Files.zip"
+    
+    return StreamingResponse(
+        zip_buffer, 
+        media_type="application/zip", 
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 def format_date_ddmmmyy(dt: datetime) -> str:
     """Format datetime as DDMMMYY (e.g., 01JAN25)."""

@@ -21,8 +21,8 @@ async def process_gmail_sync_simplified(days: int, db):
         query = '-label:ILAN_PROCESSED'
         
         print(f"[SYNC] Gmail query: {query}")
-        # Fetch up to 200 messages to avoid timeouts, can be increased
-        messages = gmail_service.get_messages(query=query, max_results=200)
+        # Fetch up to 5 messages to avoid timeouts, can be increased
+        messages = gmail_service.get_messages(query=query, max_results=5)
         
         if not messages:
             print("[SYNC] No new messages found.")

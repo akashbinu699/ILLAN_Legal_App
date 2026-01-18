@@ -1,5 +1,5 @@
 import React from 'react';
-import { Download, RefreshCw } from 'lucide-react';
+import { Download } from 'lucide-react';
 import type { Case, CaseStage, ViewMode } from '../types';
 import { cn } from '../utils/cn';
 
@@ -17,13 +17,12 @@ export const CaseHeader: React.FC<CaseHeaderProps> = ({
   viewMode,
   onViewChange,
   onCaseStageChange,
-  onFeedbackToggle,
 
 }) => {
   const caseStages: CaseStage[] = ['Contradictory', 'RAPO', 'Litigation'];
 
   // Logic to determine if we act as if we are in feedback loop
-  const isRightActionActive = viewMode === 'Email to client' || viewMode === 'Pre Action Letter';
+  // const isRightActionActive = viewMode === 'Email to client' || viewMode === 'Pre Action Letter';
 
   return (
     <div className="bg-white px-6 py-4 space-y-4">
@@ -32,7 +31,9 @@ export const CaseHeader: React.FC<CaseHeaderProps> = ({
         <h1 className="text-xl font-bold text-gray-900 tracking-tight">
           {caseData.fullId}
         </h1>
-        <button className="bg-red-600 hover:bg-red-700 text-white p-1.5 rounded-md transition-colors">
+        <button
+          onClick={() => window.open(`http://localhost:8000/api/cases/${caseData.id}/download-zip`, '_blank')}
+          className="bg-red-600 hover:bg-red-700 text-white p-1.5 rounded-md transition-colors">
           <Download className="h-5 w-5" />
         </button>
       </div>
@@ -116,17 +117,6 @@ export const CaseHeader: React.FC<CaseHeaderProps> = ({
             )}
           >
             Email to client
-          </button>
-
-          <button
-            onClick={onFeedbackToggle}
-            className={cn(
-              "p-1 rounded transition-colors",
-              isRightActionActive ? "text-gray-900 bg-gray-50" : "text-gray-500 hover:bg-gray-100"
-            )}
-            aria-label="Toggle Feedback Loop"
-          >
-            <RefreshCw className="h-5 w-5" />
           </button>
 
           <button
